@@ -80,14 +80,14 @@ class CANBusCommander(cmd.Cmd):
             finally:
                 self.bus.shutdown()
                 self.bus = None
-                print(f"CAN sensor data saved to {self.csv_file}")
+                print(f"Sensor data saved to {self.csv_file}")
 
     def do_version(self, arg):
-        """Display the version of the CAN bus interface"""
+        """Display the version of the sensor module firmware"""
         print(f"Version: {self.version}")
 
     def do_start(self, arg):
-        """Start real-time CAN bus streaming"""
+        """Start real-time sensor streaming"""
         if not self.streaming:
             self.streaming = True
             self.stream_thread = threading.Thread(target=self.stream_data)
@@ -96,8 +96,18 @@ class CANBusCommander(cmd.Cmd):
         else:
             print("Streaming is already active")
 
+    def do_stream_buffer(self, arg):
+        """Stream buffered sensor streaming"""
+        if not self.streaming:
+            self.streaming = True
+            self.stream_thread = threading.Thread(target=self.stream_data, args=(True,))
+            self.stream_thread.start()
+            print("Started streaming buffered data")
+        else:
+            print("Streaming is already active")
+
     def do_stop(self, arg):
-        """Stop real-time CAN bus streaming"""
+        """Stop streaming"""
         if self.streaming:
             self.streaming = False
             if self.stream_thread:

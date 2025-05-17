@@ -5,6 +5,9 @@ import struct
 import cmd
 import threading
 
+# Global configuration
+CAN_CHANNEL = 'COM8'  # Set the COM port for the CANable interface
+
 class CANBusCommander(cmd.Cmd):
     intro = """Inkley Sensor Command Line Interface. Type 'help' for commands.
 Inkey Sensor CLI Menu:
@@ -14,6 +17,9 @@ Inkey Sensor CLI Menu:
   4 - Stop streaming
   5 - Display current readings
   6 - Exit program
+
+Additional commands:
+  set_channel - Set the COM port for the CANable interface
 """
     prompt = "> "
     
@@ -33,6 +39,8 @@ Inkey Sensor CLI Menu:
         self.streaming = False
         self.stream_thread = None
         self.csv_file = 'Inkley_sensor_data.csv'
+        # Print the current CAN channel at startup
+        print(f"Using CAN channel: {CAN_CHANNEL}")
         self.sensor_data = {
             'Pressure1': '',
             'Pressure2': '',
@@ -85,12 +93,12 @@ Inkey Sensor CLI Menu:
         """Initialize the CAN bus if not already initialized"""
         if self.bus is None:
             try:
-                # Windows
-                self.bus = can.interface.Bus(interface='slcan', channel='COM8', bitrate=1000000)
-                print("CAN bus initialized successfully")
+                # Use the global CAN_CHANNEL variable
+                self.bus = can.interface.Bus(interface='slcan', channel=CAN_CHANNEL, bitrate=1000000)
+                print(f"CAN bus initialized successfully on {CAN_CHANNEL}")
                 return True
             except Exception as e:
-                print(f"Error initializing CAN bus: {e}")
+                print(f"Error initializing CAN bus on {CAN_CHANNEL}: {e}")
                 return False
         return True
         
@@ -316,6 +324,29 @@ Inkey Sensor CLI Menu:
         else:
             return super().default(line)
             
+    def do_set_channel(self, arg):
+        """Set the COM port for the CANable interface (e.g., 'set_channel COM8')"""
+        global CAN_CHANNEL
+        if arg:
+            # Close existing connection if any
+            if self.bus:
+                self.bus.shutdown()
+                self.bus = None
+                
+            # Update the global channel
+            CAN_CHANNEL = arg
+            print(f"CAN channel set to {CAN_CHANNEL}")
+            
+            # Try to initialize with the new channel
+            if self.initialize_can_bus():
+                print("Successfully connected to the new channel")
+            else:
+                print("Failed to connect to the new channel, but it will be used for future connection attempts")
+        else:
+            print(f"Current CAN channel is {CAN_CHANNEL}")
+            print("Usage: set_channel <COM_PORT>")
+            print("Example: set_channel COM8")
+    
     def do_help(self, arg):
         """List available commands with help text"""
         if arg:

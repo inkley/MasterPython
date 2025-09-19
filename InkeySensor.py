@@ -4,9 +4,164 @@ import datetime
 import struct
 import cmd
 import threading
+import platform
+import serial.tools.list_ports
+import re
 
 # Global configuration
-CAN_CHANNEL = 'COM8'  # Set the COM port for the CANable interface
+CAN_CHANNEL = None  # Will be set after port detection/selection
+
+def detect_os():
+    """Detect the current operating system"""
+    system = platform.system().lower()
+    if system == 'windows':
+        return 'Windows'
+    elif system == 'darwin':
+        return 'macOS'
+    elif system == 'linux':
+        return 'Linux'
+    else:
+        return f'Unknown ({system})'
+
+def scan_can_ports():
+    """Scan for available CAN interface serial ports (CANdo/CANable devices)"""
+    ports = []
+    available_ports = serial.tools.list_ports.comports()
+    
+    # Common identifiers for CAN interfaces
+    can_identifiers = [
+        'canable',
+        'cando', 
+        'slcan',
+        'can',
+        'cantact',
+        'usb2can',
+        'peak',
+        'kvaser'
+    ]
+    
+    for port in available_ports:
+        port_info = {
+            'device': port.device,
+            'description': port.description or '',
+            'manufacturer': port.manufacturer or '',
+            'vid_pid': f"{port.vid:04X}:{port.pid:04X}" if port.vid and port.pid else '',
+            'serial_number': port.serial_number or '',
+            'is_can_device': False
+        }
+        
+        # Check if this might be a CAN device based on description, manufacturer, or VID/PID
+        search_text = f"{port_info['description']} {port_info['manufacturer']} {port_info['serial_number']}".lower()
+        
+        for identifier in can_identifiers:
+            if identifier in search_text:
+                port_info['is_can_device'] = True
+                break
+        
+        # Also check for common CAN device VID/PIDs
+        can_vid_pids = [
+            '1D50:606F',  # CANable
+            '16C0:27DD',  # CANtact
+            '0483:5740',  # STM32 (common for CAN devices)
+        ]
+        
+        if port_info['vid_pid'] in can_vid_pids:
+            port_info['is_can_device'] = True
+            
+        ports.append(port_info)
+    
+    return ports
+
+def select_can_port():
+    """Interactive port selection for CAN interface"""
+    global CAN_CHANNEL
+    
+    print(f"\nDetected OS: {detect_os()}")
+    print("Scanning for available serial ports...")
+    
+    ports = scan_can_ports()
+    
+    if not ports:
+        print("No serial ports found!")
+        return None
+    
+    # Separate CAN devices from other ports
+    can_ports = [p for p in ports if p['is_can_device']]
+    other_ports = [p for p in ports if not p['is_can_device']]
+    
+    print("\n" + "="*80)
+    print("AVAILABLE SERIAL PORTS")
+    print("="*80)
+    
+    port_options = []
+    option_num = 1
+    
+    if can_ports:
+        print("\nLikely CAN Interface Devices:")
+        print("-" * 40)
+        for port in can_ports:
+            print(f"  {option_num}. {port['device']}")
+            print(f"     Description: {port['description']}")
+            if port['manufacturer']:
+                print(f"     Manufacturer: {port['manufacturer']}")
+            if port['vid_pid'] != ':':
+                print(f"     VID:PID: {port['vid_pid']}")
+            if port['serial_number']:
+                print(f"     Serial: {port['serial_number']}")
+            print()
+            port_options.append(port)
+            option_num += 1
+    
+    if other_ports:
+        print("Other Serial Ports:")
+        print("-" * 40)
+        for port in other_ports:
+            print(f"  {option_num}. {port['device']}")
+            print(f"     Description: {port['description']}")
+            if port['manufacturer']:
+                print(f"     Manufacturer: {port['manufacturer']}")
+            if port['vid_pid'] != ':':
+                print(f"     VID:PID: {port['vid_pid']}")
+            print()
+            port_options.append(port)
+            option_num += 1
+    
+    print(f"  {option_num}. Enter custom port manually")
+    print(f"  {option_num + 1}. Skip port selection (use default)")
+    
+    while True:
+        try:
+            choice = input(f"\nSelect a port (1-{option_num + 1}): ").strip()
+            
+            if not choice:
+                continue
+                
+            choice_num = int(choice)
+            
+            if 1 <= choice_num <= len(port_options):
+                selected_port = port_options[choice_num - 1]
+                CAN_CHANNEL = selected_port['device']
+                print(f"Selected port: {CAN_CHANNEL}")
+                return CAN_CHANNEL
+            elif choice_num == option_num:
+                # Manual entry
+                custom_port = input("Enter custom port (e.g., COM8, /dev/ttyUSB0): ").strip()
+                if custom_port:
+                    CAN_CHANNEL = custom_port
+                    print(f"Using custom port: {CAN_CHANNEL}")
+                    return CAN_CHANNEL
+            elif choice_num == option_num + 1:
+                # Skip selection
+                print("Skipping port selection. You can set it later using 'set_channel' command.")
+                return None
+            else:
+                print(f"Invalid choice. Please enter a number between 1 and {option_num + 1}")
+                
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+        except KeyboardInterrupt:
+            print("\nPort selection cancelled.")
+            return None
 
 class CANBusCommander(cmd.Cmd):
     intro = """Inkley Sensor Command Line Interface. Type 'help' for commands.
@@ -16,10 +171,14 @@ Inkey Sensor CLI Menu:
   3 - Stream buffered data
   4 - Stop streaming
   5 - Display current readings
-  6 - Exit program
+  6 - Scan and select CAN ports
+  7 - Show system information
+  8 - Exit program
 
 Additional commands:
   set_channel - Set the COM port for the CANable interface
+  scan_ports - Scan for available CAN interface ports
+  system_info - Display OS and port information
 """
     prompt = "> "
     
@@ -30,7 +189,9 @@ Additional commands:
         '3': 'stream_buffer',
         '4': 'stop',
         '5': 'readings',
-        '6': 'quit'
+        '6': 'scan_ports',
+        '7': 'system_info',
+        '8': 'quit'
     }
 
     def __init__(self):
@@ -39,8 +200,13 @@ Additional commands:
         self.streaming = False
         self.stream_thread = None
         self.csv_file = 'Inkley_sensor_data.csv'
+        
         # Print the current CAN channel at startup
-        print(f"Using CAN channel: {CAN_CHANNEL}")
+        if CAN_CHANNEL:
+            print(f"Using CAN channel: {CAN_CHANNEL}")
+        else:
+            print("No CAN channel configured. Use 'scan_ports' (option 6) or 'set_channel' to configure a port.")
+            
         self.sensor_data = {
             'Pressure1': '',
             'Pressure2': '',
@@ -92,6 +258,9 @@ Additional commands:
     def initialize_can_bus(self):
         """Initialize the CAN bus if not already initialized"""
         if self.bus is None:
+            if CAN_CHANNEL is None:
+                print("No CAN channel configured. Use 'scan_ports' or 'set_channel' to configure a port.")
+                return False
             try:
                 # Use the global CAN_CHANNEL variable
                 self.bus = can.interface.Bus(interface='slcan', channel=CAN_CHANNEL, bitrate=1000000)
@@ -346,6 +515,55 @@ Additional commands:
             print(f"Current CAN channel is {CAN_CHANNEL}")
             print("Usage: set_channel <COM_PORT>")
             print("Example: set_channel COM8")
+    
+    def do_scan_ports(self, arg):
+        """Scan for available CAN interface ports and allow selection"""
+        select_can_port()
+    
+    def do_system_info(self, arg):
+        """Display system information and available ports"""
+        print(f"\nSystem Information:")
+        print(f"Operating System: {detect_os()}")
+        print(f"Platform: {platform.platform()}")
+        print(f"Python Version: {platform.python_version()}")
+        print(f"Current CAN Channel: {CAN_CHANNEL or 'Not configured'}")
+        
+        print(f"\nScanning for serial ports...")
+        ports = scan_can_ports()
+        
+        if not ports:
+            print("No serial ports found!")
+            return
+        
+        # Separate CAN devices from other ports
+        can_ports = [p for p in ports if p['is_can_device']]
+        other_ports = [p for p in ports if not p['is_can_device']]
+        
+        if can_ports:
+            print(f"\nDetected CAN Interface Devices ({len(can_ports)}):")
+            print("-" * 50)
+            for port in can_ports:
+                print(f"  Port: {port['device']}")
+                print(f"  Description: {port['description']}")
+                if port['manufacturer']:
+                    print(f"  Manufacturer: {port['manufacturer']}")
+                if port['vid_pid'] != ':':
+                    print(f"  VID:PID: {port['vid_pid']}")
+                if port['serial_number']:
+                    print(f"  Serial: {port['serial_number']}")
+                print()
+        
+        if other_ports:
+            print(f"Other Serial Ports ({len(other_ports)}):")
+            print("-" * 50)
+            for port in other_ports:
+                print(f"  Port: {port['device']}")
+                print(f"  Description: {port['description']}")
+                if port['manufacturer']:
+                    print(f"  Manufacturer: {port['manufacturer']}")
+                if port['vid_pid'] != ':':
+                    print(f"  VID:PID: {port['vid_pid']}")
+                print()
     
     def do_help(self, arg):
         """List available commands with help text"""

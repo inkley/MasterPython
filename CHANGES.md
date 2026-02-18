@@ -1,134 +1,133 @@
-# Changes Made to InkeySensor.py
+# MasterPython – Change Log
 
-## Summary
-Added cross-platform OS detection and intelligent CAN port scanning functionality to the Inkley Sensor CAN Interface.
+---
 
-## New Dependencies
-```python
-import platform          # For OS detection
-import serial.tools.list_ports  # For serial port scanning
-import re                # For pattern matching (imported but not used in final version)
-```
+## v1.3 – Cross-Platform CAN Port Detection & CLI Improvements
 
-## New Global Functions
+### Summary
+Major usability upgrade adding cross-platform OS detection, intelligent CAN port scanning, and enhanced CLI functionality for the Inkley Sensor CAN Interface.
 
-### `detect_os()`
-- Detects the current operating system (Windows, macOS, Linux)
+---
+
+## Added
+
+### Cross-Platform Support
+- Automatic OS detection (Windows, macOS, Linux)
+- Serial port scanning compatible across platforms
+- Graceful handling of systems without serial ports
+
+### New Dependencies
+    import platform
+    import serial.tools.list_ports
+    import re
+
+### New Global Functions
+
+#### detect_os()
+- Detects host operating system
 - Returns user-friendly OS names
 - Handles unknown systems gracefully
 
-### `scan_can_ports()`
-- Scans all available serial ports on the system
-- Identifies likely CAN interface devices using:
-  - Device description keywords (canable, cando, slcan, etc.)
+#### scan_can_ports()
+- Scans all available serial ports
+- Identifies likely CAN devices using:
+  - Device description keywords
   - Manufacturer information
-  - Common CAN device VID/PID combinations
-- Returns detailed port information including:
-  - Device path
-  - Description
-  - Manufacturer
-  - VID:PID
-  - Serial number
-  - CAN device classification
+  - Known CAN VID/PID combinations
+- Returns detailed port metadata
 
-### `select_can_port()`
-- Interactive port selection interface
+#### select_can_port()
+- Interactive CLI-based port selection
 - Separates likely CAN devices from other serial ports
-- Provides numbered menu for easy selection
 - Allows manual port entry
-- Handles user cancellation gracefully
-- Updates global `CAN_CHANNEL` variable
+- Updates global CAN_CHANNEL
+- Handles cancellation gracefully
 
-## Modified Code Sections
+---
+
+## Modified
 
 ### Global Configuration
-```python
-# Changed from hardcoded COM8 to dynamic selection
-CAN_CHANNEL = None  # Will be set after port detection/selection
-```
+Replaced hardcoded COM port with dynamic selection:
 
-### Class Initialization (`__init__`)
-- Removed automatic port selection on startup (to avoid blocking)
-- Added informative message about port configuration options
-- Enhanced startup messaging
+    CAN_CHANNEL = None
 
-### CAN Bus Initialization (`initialize_can_bus`)
-- Added check for `CAN_CHANNEL = None`
-- Provides helpful error message when no port is configured
-- Prevents crashes when attempting to connect without a port
+### Class Initialization
+- Removed blocking auto-selection
+- Improved startup messaging
 
-### New Menu Commands
+### initialize_can_bus()
+- Added check for CAN_CHANNEL is None
+- Improved error messaging
+- Prevented startup crashes
 
-#### Updated Menu (intro)
-- Added option 6: "Scan and select CAN ports"
-- Added option 7: "Show system information"  
-- Updated option 8: "Exit program" (was option 6)
-- Added documentation for new commands
+---
 
-#### Updated Command Map
-```python
-COMMAND_MAP = {
-    '1': 'version',
-    '2': 'start',
-    '3': 'stream_buffer', 
-    '4': 'stop',
-    '5': 'readings',
-    '6': 'scan_ports',      # NEW
-    '7': 'system_info',     # NEW
-    '8': 'quit'             # Updated number
-}
-```
+## CLI Enhancements
 
-### New Command Methods
+### Updated Command Map
+    COMMAND_MAP = {
+        '1': 'version',
+        '2': 'start',
+        '3': 'stream_buffer',
+        '4': 'stop',
+        '5': 'readings',
+        '6': 'scan_ports',
+        '7': 'system_info',
+        '8': 'quit'
+    }
 
-#### `do_scan_ports(self, arg)`
-- Calls the interactive port selection function
-- Allows users to scan and select ports from within the CLI
+### New Commands
 
-#### `do_system_info(self, arg)`
-- Displays comprehensive system information:
-  - Operating system and platform details
-  - Python version
-  - Current CAN channel configuration
-  - All available serial ports with detailed information
-  - Separates likely CAN devices from other ports
+#### scan_ports
+- Scan and select CAN interfaces from CLI
 
-## Enhanced Features
+#### system_info
+Displays:
+- OS and platform info
+- Python version
+- Current CAN channel
+- Detailed port inventory
 
-### Cross-Platform Compatibility
-- **Windows**: Detects COM ports (COM1, COM8, etc.)
-- **macOS**: Detects /dev/tty.* and /dev/cu.* devices  
-- **Linux**: Detects /dev/ttyUSB*, /dev/ttyACM*, etc.
+---
 
-### Intelligent Device Detection
-The system recognizes CAN interfaces by checking for:
-- **Keywords**: canable, cando, slcan, can, cantact, usb2can, peak, kvaser
-- **VID/PID combinations**:
-  - `1D50:606F` - CANable
-  - `16C0:27DD` - CANtact  
-  - `0483:5740` - STM32 (common for CAN devices)
+## Intelligent CAN Detection
 
-### User Experience Improvements
-- Clear separation of likely CAN devices from other serial ports
-- Detailed device information display
-- Non-blocking startup (doesn't force port selection immediately)
-- Graceful handling of systems with no serial ports
-- Option to skip port selection or enter custom ports
+Recognizes devices using:
 
-## Installation Requirements
-Added requirement for `pyserial` package:
-```bash
-pip install pyserial
-```
+Keywords:
+- canable
+- cando
+- slcan
+- cantact
+- usb2can
+- peak
+- kvaser
+
+VID/PID Examples:
+- 1D50:606F – CANable
+- 16C0:27DD – CANtact
+- 0483:5740 – STM32-based CAN devices
+
+---
+
+## Installation
+
+    pip install python-can pyserial
+
+---
 
 ## Backward Compatibility
-- All existing functionality preserved
-- Existing command numbers still work (except quit moved from 6 to 8)
-- Manual port setting via `set_channel` still available
-- Original CAN communication protocol unchanged
 
-## Error Handling
-- Graceful handling of systems with no serial ports
-- Clear error messages when no CAN channel is configured
-- Proper exception handling in port scanning
-- User-friendly messages for connection issues
+- All core functionality preserved
+- Manual set_channel still supported
+- CAN protocol unchanged
+- Command numbering updated (quit moved from 6 to 8)
+
+---
+
+## Notes
+
+- Pressure2 streaming updates integrated
+- Data logging improvements ongoing
+- Future work: configuration file support and auto-connect profiles

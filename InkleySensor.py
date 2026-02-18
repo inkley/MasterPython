@@ -1,3 +1,37 @@
+"""
+Author: Tyler Inkley
+
+Inkley_SensorCommander (Python CLI)
+- Command-line interface for interacting with the Inkley/Tiva pressure sensor module over CAN (SLCAN/CANable).
+- Supports:
+    * Query firmware version (ACK via PC_RESP_ID)
+    * Start/stop real-time streaming
+    * Stream buffered mode (placeholder on firmware side if not implemented)
+    * Request current readings (command-based)
+    * Scan and select serial/CAN interface ports
+    * Set logging output directory + CSV filename
+- Logging:
+    * Writes a CSV with columns: Timestamp, Pressure1, Pressure2
+    * Supports high-rate “packed” broadcast frames on CAN ID 0x7DF (frame_type=0x05, sensor_id=0x12)
+      where Pressure1/Pressure2 are 12-bit ADC counts packed into bytes [2..5].
+    * Flushes periodically to reduce data loss risk.
+- Protocol notes:
+    * Commands are sent TO the module at CAN ID 0x107.
+    * The module returns ACK/response frames to PC_RESP_ID (default 0x108), included in the command payload.
+- Typical usage:
+    1) scan_ports   (or set_channel COMx)
+    2) set_outdir   <path>     (optional)
+    3) set_filename <file.csv> (optional)
+    4) start        (real-time logging)  /  stop
+    5) version      (query firmware build/version)
+
+Dependencies:
+- python-can
+- pyserial
+
+Last updated: 2026-02-16
+"""
+
 import can
 import csv
 import datetime
@@ -6,10 +40,14 @@ import cmd
 import threading
 import platform
 import serial.tools.list_ports
-import re
+import os
+from pathlib import Path
 
 # Global configuration
-CAN_CHANNEL = None  # Will be set after port detection/selection
+CAN_CHANNEL = 'COM5'
+
+# NEW: the CAN ID PC/listener will receive ACK responses on
+PC_RESP_ID = 0x108
 
 def detect_os():
     """Detect the current operating system"""
@@ -164,7 +202,7 @@ def select_can_port():
             return None
 
 class CANBusCommander(cmd.Cmd):
-    intro = """Inkley Sensor Command Line Interface. Type 'help' for commands.
+    intro = """Inkley Sensor Command Line Interface. Type 'help' for commands.\n
 Inkey Sensor CLI Menu:
   1 - Display version
   2 - Start real-time streaming
@@ -176,9 +214,11 @@ Inkey Sensor CLI Menu:
   8 - Exit program
 
 Additional commands:
-  set_channel - Set the COM port for the CANable interface
-  scan_ports - Scan for available CAN interface ports
-  system_info - Display OS and port information
+  set_channel      - Set the COM port for the CANable interface
+  scan_ports       - Scan for available CAN interface ports
+  system_info      - Display OS and port information
+  set_outdir       - Set output directory for CSV logging
+  set_filename     - Set CSV filename for logging
 """
     prompt = "> "
     
@@ -199,27 +239,37 @@ Additional commands:
         self.bus = None
         self.streaming = False
         self.stream_thread = None
-        self.csv_file = 'Inkley_sensor_data.csv'
+
+        # --- Output file settings ---
+        self.output_dir = Path.cwd() / "Data"     # default folder: ./Data
+        self.csv_file = "Inkley_sensor_data.csv" # default filename (can be overridden)
         
         # Print the current CAN channel at startup
         if CAN_CHANNEL:
-            print(f"Using CAN channel: {CAN_CHANNEL}")
+            print(f"Using CAN channel: {CAN_CHANNEL}\n")
         else:
             print("No CAN channel configured. Use 'scan_ports' (option 6) or 'set_channel' to configure a port.")
-            
+
+        # Latest-known values + timestamps for deterministic logging
         self.sensor_data = {
-            'Pressure1': '',
-            'Pressure2': '',
-            'Temperature1': '',
-            'Temperature2': ''
+            'Pressure1': None,
+            'Pressure2': None,
         }
+        self.sensor_time = {
+            'Pressure1': None,
+            'Pressure2': None,
+        }
+
+        # NEW: lock to protect shared data between CLI thread + stream thread
+        self.data_lock = threading.Lock()
+
         # Define CAN ID and sensor IDs
         self.CAN_ID = 0x107  # Updated to new sensor module CAN ID
         self.SENSOR_IDS = {
             0x01: 'Pressure1',
-            0x02: 'Pressure2',
-            0x03: 'Temperature1',
-            0x04: 'Temperature2'
+            0x02: 'Pressure2'#,
+            #0x03: 'Temperature1',
+            #0x04: 'Temperature2'
         }
         # Command IDs for sending to the sensor module
         self.CMD_VERSION = 0x01
@@ -229,31 +279,6 @@ Additional commands:
         self.CMD_GET_READINGS = 0x05
         
         self.version = "1.0.0"
-
-    def parse_sensor_value(self, data):
-        """Parse sensor data based on the response format
-        
-        Format:
-        - First byte: Length of the data
-        - Next two bytes: CAN ID of the sensor module
-        - Next byte: Command that was sent
-        - Next four bytes: Returned value
-        """
-        # Check if we have enough data
-        if len(data) < 8:  # Need at least 8 bytes for a complete response
-            return None
-            
-        # Extract the components
-        length = data[0]
-        # CAN ID is in bytes 1-2 (we don't need to use it here)
-        command_id = data[3]  # Command is in byte 3
-        
-        # For all commands that return a 4-byte value
-        if length >= 7 and len(data) >= 8:  # Length should be at least 7 for command + 4 bytes of data
-            raw_value = data[4:8]  # Value is in bytes 4-7
-            return struct.unpack('>i', bytes(raw_value))[0]
-            
-        return None
         
     def initialize_can_bus(self):
         """Initialize the CAN bus if not already initialized"""
@@ -263,7 +288,7 @@ Additional commands:
                 return False
             try:
                 # Use the global CAN_CHANNEL variable
-                self.bus = can.interface.Bus(interface='slcan', channel=CAN_CHANNEL, bitrate=1000000)
+                self.bus = can.interface.Bus(interface='slcan', channel=CAN_CHANNEL, bitrate=500000)
                 print(f"CAN bus initialized successfully on {CAN_CHANNEL}")
                 return True
             except Exception as e:
@@ -271,35 +296,81 @@ Additional commands:
                 return False
         return True
         
-    def send_command(self, command_id, data=None):
-        """Send a command to the sensor module via CAN bus"""
+    def send_command(self, command_id, value_u32=None):
+        """Send a command to the sensor module via CAN bus.
+        Payload format (matches Tiva main.c):
+          [0]=cmd, [1]=resp_id_hi, [2]=resp_id_lo, [3..6]=u32 value, [7]=0
+        """
         if not self.initialize_can_bus():
             return False
-                
-        # Prepare message data - first byte is command ID
-        message_data = [command_id]
-        
-        # Add additional data if provided
-        if data:
-            message_data.extend(data)
-            
-        # Pad to 8 bytes if necessary
-        while len(message_data) < 8:
-            message_data.append(0x00)
-            
-        # Create and send the CAN message
+
+        resp_hi = (PC_RESP_ID >> 8) & 0xFF
+        resp_lo = (PC_RESP_ID >> 0) & 0xFF
+
+        if value_u32 is None:
+            b3 = b4 = b5 = b6 = 0
+        else:
+            value_u32 = int(value_u32) & 0xFFFFFFFF
+            b3 = (value_u32 >> 24) & 0xFF
+            b4 = (value_u32 >> 16) & 0xFF
+            b5 = (value_u32 >>  8) & 0xFF
+            b6 = (value_u32 >>  0) & 0xFF
+
+        message_data = [command_id, resp_hi, resp_lo, b3, b4, b5, b6, 0x00]
+
         try:
             msg = can.Message(
-                arbitration_id=self.CAN_ID,
+                arbitration_id=self.CAN_ID,   # send TO the module (0x107)
                 data=message_data,
                 is_extended_id=False
             )
             self.bus.send(msg)
-            print(f"Sent command {hex(command_id)} to sensor module")
             return True
         except Exception as e:
             print(f"Error sending command: {e}")
             return False
+
+    def do_set_outdir(self, arg):
+        """Set output directory (e.g., set_outdir C:\\data\\run1  OR  set_outdir ./data/run1)"""
+        if not arg.strip():
+            print(f"Current output directory: {self.output_dir.resolve()}")
+            return
+        self.output_dir = Path(arg.strip()).expanduser()
+        print(f"Output directory set to: {self.output_dir.resolve()}")
+
+    def do_set_filename(self, arg):
+        """Set output CSV filename (e.g., set_filename test01.csv)"""
+        name = arg.strip()
+        if not name:
+            print(f"Current filename: {self.csv_file}")
+            return
+        if not name.lower().endswith(".csv"):
+            name += ".csv"
+        self.csv_file = name
+        print(f"Filename set to: {self.csv_file}")
+
+    def do_set_output(self, arg):
+        """Set both directory and filename.
+    Usage: set_output <dir> <filename>
+    Example: set_output C:\\data\\run1 trialA.csv
+    Example: set_output ./data/run1 trialA.csv
+    """
+        parts = arg.strip().split()
+        if len(parts) < 2:
+            print("Usage: set_output <dir> <filename>")
+            return
+        outdir = parts[0]
+        filename = " ".join(parts[1:])  # allow spaces if you really want them
+        self.output_dir = Path(outdir).expanduser()
+        if not filename.lower().endswith(".csv"):
+            filename += ".csv"
+        self.csv_file = filename
+        print(f"Output set to: {(self.output_dir / self.csv_file).resolve()}")
+
+    def _make_output_path(self) -> Path:
+        """Return full output path; ensure directory exists."""
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        return self.output_dir / self.csv_file
 
     def stream_data(self):
         # Initialize CAN bus interface for CANable
@@ -308,66 +379,90 @@ Additional commands:
                 print("Failed to initialize CAN bus")
                 return
             
-            with open(self.csv_file, mode='w', newline='') as file:
+            out_path = self._make_output_path()
+            print(f"Logging to: {out_path.resolve()}")
+            with open(out_path, mode='w', newline='') as file:
                 writer = csv.writer(file)
-                writer.writerow(['Timestamp', 'Pressure1', 'Pressure2', 'Temperature1', 'Temperature2'])
+                writer.writerow(['Timestamp', 'Pressure1', 'Pressure2'])
+                sample_counter = 0
                 last_write_time = datetime.datetime.now()
+                write_period_s = 1.0
+                stale_after_s = 2.0
 
                 while self.streaming:
-                    for msg in self.bus:
-                        if not self.streaming:
-                            break
-                        current_time = datetime.datetime.now()
-                        
-                        # Process all CAN messages with the expected format
-                        if len(msg.data) >= 8:  # Need at least 8 bytes for a complete response
-                            # Extract the components based on the format
-                            length = msg.data[0]
-                            # CAN ID is in bytes 1-2
-                            command_id = msg.data[3]  # Command is in byte 3
-                            
-                            # Handle version response separately
-                            if command_id == self.CMD_VERSION and len(msg.data) >= 8:
-                                # For version, the 4 bytes contain major, minor, patch, build
-                                major = msg.data[4]
-                                minor = msg.data[5]
-                                patch = msg.data[6]
-                                build = msg.data[7]
-                                version_str = f"{major}.{minor}.{patch}.{build}"
-                                print(f"Received sensor module firmware version: {version_str}")
-                                # Update local version
-                                self.version = version_str
-                            
-                            # Handle sensor data for other commands
-                            elif command_id in [self.CMD_START_STREAM, self.CMD_STREAM_BUFFER, self.CMD_GET_READINGS]:
-                                # The sensor ID is included in the response
-                                sensor_id = msg.data[4]  # Assuming sensor ID is the first byte of the value
-                                
-                                if sensor_id in self.SENSOR_IDS:
-                                    # Parse the remaining 3 bytes as the actual value
-                                    if len(msg.data) >= 8:
-                                        # Use the last 3 bytes for the value (assuming it's a 3-byte value)
-                                        raw_value = bytes([0]) + bytes(msg.data[5:8])  # Pad with a zero byte for 4-byte int
-                                        value = struct.unpack('>i', raw_value)[0]
-                                        self.sensor_data[self.SENSOR_IDS[sensor_id]] = str(value)
-                                        print(f"Received {self.SENSOR_IDS[sensor_id]} value: {value}")
+                    # Wake up at least every 0.1s even if no CAN messages arrive
+                    msg = self.bus.recv(timeout=0.1)
+                    current_time = datetime.datetime.now()
 
-                        if (current_time - last_write_time).total_seconds() >= 1:
-                            writer.writerow([
-                                current_time.isoformat(),
-                                self.sensor_data['Pressure1'],
-                                self.sensor_data['Pressure2'],
-                                self.sensor_data['Temperature1'],
-                                self.sensor_data['Temperature2']
-                            ])
-                            last_write_time = current_time
+                    handled = False
+
+                    # Only parse if we actually received a message
+                    if msg is not None:
+                        # --- Special-case: broadcast realtime frames from Tiva (ID 0x7DF) ---
+                        if msg.arbitration_id == 0x7DF and len(msg.data) == 8:
+                            frame_type = msg.data[0]
+                            sensor_id  = msg.data[1]
+
+                            if frame_type == 0x05:
+
+                                # -------- NEW PACKED MODE --------
+                                if sensor_id == 0x12:   # packed P1 + P2
+                                    p1 = (msg.data[2] << 8) | msg.data[3]
+                                    p2 = (msg.data[4] << 8) | msg.data[5]
+
+                                    with self.data_lock:
+                                        self.sensor_data['Pressure1'] = p1
+                                        self.sensor_time['Pressure1'] = current_time
+                                        self.sensor_data['Pressure2'] = p2
+                                        self.sensor_time['Pressure2'] = current_time
+
+                                    # Write every sample (1000 Hz)
+                                    writer.writerow([current_time.isoformat(timespec="milliseconds"), p1, p2])
+
+                                    sample_counter += 1   # increment
+
+                                    # Flush every 1000 samples (~1 second at 1 kHz)
+                                    if sample_counter % 1000 == 0:
+                                        file.flush()
+
+                                   
+                                    #print(f"[BC] Pressure1: {p1}  Pressure2: {p2}")
+                                    if sample_counter % 1000 == 0:
+                                        print(f"Logged {sample_counter} samples")
+
+                                # -------- OLD SINGLE SENSOR MODE (keep for safety) --------
+                                elif sensor_id in self.SENSOR_IDS:
+                                    value = struct.unpack('>I', bytes(msg.data[4:8]))[0]
+                                    name = self.SENSOR_IDS[sensor_id]
+
+                                    with self.data_lock:
+                                        self.sensor_data[name] = value
+                                        self.sensor_time[name] = current_time
+
+                                    print(f"[BC] {name}: {value}")
+
+                            handled = True
+
+                        # Handle ACK/response frames coming back to the PC
+                        if msg is not None and msg.arbitration_id == PC_RESP_ID and len(msg.data) == 8:
+                            cmd_id = msg.data[3]
+                            if cmd_id == self.CMD_VERSION:
+                                major, minor, patch, build = msg.data[4], msg.data[5], msg.data[6], msg.data[7]
+                                self.version = f"{major}.{minor}.{patch}.{build}"
+                                print(f"Received firmware version: {self.version}")
+                            else:
+                                # Generic status/value in bytes 4..7
+                                val = (msg.data[4] << 24) | (msg.data[5] << 16) | (msg.data[6] << 8) | msg.data[7]
+                                print(f"ACK cmd={hex(cmd_id)} value={val}")
+                            continue
+
         except Exception as e:
             print(f"Streaming error: {e}")
         finally:
             if self.bus:
                 self.bus.shutdown()
                 self.bus = None
-            print(f"Sensor data saved to {self.csv_file}")
+            print(f"Sensor data saved to {out_path.resolve() if 'out_path' in locals() else self.csv_file}")
 
     def do_version(self, arg):
         """Display the version of the sensor module firmware"""
@@ -385,24 +480,14 @@ Additional commands:
                 timeout = 5  # seconds
                 
                 while (datetime.datetime.now() - start_time).total_seconds() < timeout:
-                    msg = self.bus.recv(1)  # 1 second timeout for each recv call
-                    
-                    if msg and len(msg.data) >= 8:
-                        # Check if this is a version response based on the format
-                        length = msg.data[0]
-                        # CAN ID is in bytes 1-2
-                        command_id = msg.data[3]  # Command is in byte 3
-                        
-                        if command_id == self.CMD_VERSION:
-                            # For version, the 4 bytes contain major, minor, patch, build
-                            major = msg.data[4]
-                            minor = msg.data[5]
-                            patch = msg.data[6]
-                            build = msg.data[7]
-                            version_str = f"{major}.{minor}.{patch}.{build}"
-                            print(f"Sensor module firmware version: {version_str}")
-                            # Update local version
-                            self.version = version_str
+                    msg = self.bus.recv(1)
+
+                    if msg and msg.arbitration_id == PC_RESP_ID and len(msg.data) == 8:
+                        cmd_id = msg.data[3]
+                        if cmd_id == self.CMD_VERSION:
+                            major, minor, patch, build = msg.data[4], msg.data[5], msg.data[6], msg.data[7]
+                            self.version = f"{major}.{minor}.{patch}.{build}"
+                            print(f"Sensor module firmware version: {self.version}")
                             return
                 
                 # If we get here, we timed out waiting for a response
@@ -421,7 +506,7 @@ Additional commands:
         if not self.streaming:
             if self.send_command(self.CMD_START_STREAM):
                 self.streaming = True
-                self.stream_thread = threading.Thread(target=self.stream_data)
+                self.stream_thread = threading.Thread(target=self.stream_data, daemon=True)
                 self.stream_thread.start()
                 print("Started real-time streaming")
             else:
@@ -434,7 +519,7 @@ Additional commands:
         if not self.streaming:
             if self.send_command(self.CMD_STREAM_BUFFER):
                 self.streaming = True
-                self.stream_thread = threading.Thread(target=self.stream_data)
+                self.stream_thread = threading.Thread(target=self.stream_data, daemon=True)
                 self.stream_thread.start()
                 print("Started streaming buffered data")
             else:
@@ -477,8 +562,12 @@ Additional commands:
         if self.send_command(self.CMD_GET_READINGS):
             print("Reading request sent to sensor module")
             print("Current sensor readings:")
-            for sensor, value in self.sensor_data.items():
-                print(f"{sensor}: {value or 'No data'}")
+
+            with self.data_lock:
+                snapshot = dict(self.sensor_data)
+
+            for sensor, value in snapshot.items():
+                print(f"{sensor}: {value if value is not None else 'No data'}")
         else:
             print("Failed to send reading request command")
         
@@ -503,7 +592,7 @@ Additional commands:
                 self.bus = None
                 
             # Update the global channel
-            CAN_CHANNEL = arg
+            CAN_CHANNEL = arg.strip()
             print(f"CAN channel set to {CAN_CHANNEL}")
             
             # Try to initialize with the new channel
@@ -518,7 +607,14 @@ Additional commands:
     
     def do_scan_ports(self, arg):
         """Scan for available CAN interface ports and allow selection"""
-        select_can_port()
+        global CAN_CHANNEL
+        old = CAN_CHANNEL
+        new = select_can_port()
+        if new and new != old:
+            if self.bus:
+                self.bus.shutdown()
+                self.bus = None
+            print("Port changed — reconnecting on next CAN action.")
     
     def do_system_info(self, arg):
         """Display system information and available ports"""

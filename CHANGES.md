@@ -52,6 +52,10 @@ Replaced hardcoded COM port with dynamic selection:
 
     CAN_CHANNEL = None
 
+### CAN Performance Updates
+- Increased default SLCAN bitrate to **1 Mbps**
+- Added packed broadcast format (frame type `0x06`): two samples per 8-byte frame to reduce bus load
+
 ### Class Initialization
 - Removed blocking auto-selection
 - Improved startup messaging

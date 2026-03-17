@@ -102,6 +102,7 @@ Data automatically logs to:
 - Bitrate: 1 Mbps  
 - CAN ID: 0x107  
 - Frame Size: 8 bytes  
+- Optimized frame packing: two samples (P1+P2 each) per broadcast frame (frame_type=0x06)
 
 ---
 

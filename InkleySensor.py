@@ -288,7 +288,8 @@ Additional commands:
                 return False
             try:
                 # Use the global CAN_CHANNEL variable
-                self.bus = can.interface.Bus(interface='slcan', channel=CAN_CHANNEL, bitrate=500000)
+                # NOTE: Use 1 Mbps for high-rate sampling (matches the MCU firmware)
+                self.bus = can.interface.Bus(interface='slcan', channel=CAN_CHANNEL, bitrate=1000000)
                 print(f"CAN bus initialized successfully on {CAN_CHANNEL}")
                 return True
             except Exception as e:
@@ -403,30 +404,52 @@ Additional commands:
                             frame_type = msg.data[0]
                             sensor_id  = msg.data[1]
 
-                            if frame_type == 0x05:
+                            if frame_type in (0x05, 0x06):
 
                                 # -------- NEW PACKED MODE --------
                                 if sensor_id == 0x12:   # packed P1 + P2
-                                    p1 = (msg.data[2] << 8) | msg.data[3]
-                                    p2 = (msg.data[4] << 8) | msg.data[5]
+                                    if frame_type == 0x05:
+                                        # Legacy 1-sample-per-frame mode
+                                        p1 = (msg.data[2] << 8) | msg.data[3]
+                                        p2 = (msg.data[4] << 8) | msg.data[5]
 
-                                    with self.data_lock:
-                                        self.sensor_data['Pressure1'] = p1
-                                        self.sensor_time['Pressure1'] = current_time
-                                        self.sensor_data['Pressure2'] = p2
-                                        self.sensor_time['Pressure2'] = current_time
+                                        with self.data_lock:
+                                            self.sensor_data['Pressure1'] = p1
+                                            self.sensor_time['Pressure1'] = current_time
+                                            self.sensor_data['Pressure2'] = p2
+                                            self.sensor_time['Pressure2'] = current_time
 
-                                    # Write every sample (1000 Hz)
-                                    writer.writerow([current_time.isoformat(timespec="milliseconds"), p1, p2])
+                                        # Write every sample (1000 Hz)
+                                        writer.writerow([current_time.isoformat(timespec="milliseconds"), p1, p2])
+                                        sample_counter += 1   # increment
 
-                                    sample_counter += 1   # increment
+                                    else:
+                                        # New 2-samples-per-frame mode (reduced bus load)
+                                        # Frame payload (bytes 2..7) holds two 12-bit P1/P2 samples.
+                                        # Layout (each sample = p1 (12b) + p2 (12b)):
+                                        #   [2..4] = sample A
+                                        #   [5..7] = sample B
+                                        p1_a = (msg.data[2] << 4) | (msg.data[3] >> 4)
+                                        p2_a = ((msg.data[3] & 0x0F) << 8) | msg.data[4]
+                                        p1_b = (msg.data[5] << 4) | (msg.data[6] >> 4)
+                                        p2_b = ((msg.data[6] & 0x0F) << 8) | msg.data[7]
+
+                                        with self.data_lock:
+                                            # Update latest values for each pressure channel
+                                            self.sensor_data['Pressure1'] = p1_b
+                                            self.sensor_time['Pressure1'] = current_time
+                                            self.sensor_data['Pressure2'] = p2_b
+                                            self.sensor_time['Pressure2'] = current_time
+
+                                        # Write both samples (assume 0.5ms spacing between samples)
+                                        writer.writerow([current_time.isoformat(timespec="milliseconds"), p1_a, p2_a])
+                                        writer.writerow([(current_time + datetime.timedelta(microseconds=500)).isoformat(timespec="milliseconds"), p1_b, p2_b])
+                                        sample_counter += 2
 
                                     # Flush every 1000 samples (~1 second at 1 kHz)
                                     if sample_counter % 1000 == 0:
                                         file.flush()
 
-                                   
-                                    #print(f"[BC] Pressure1: {p1}  Pressure2: {p2}")
                                     if sample_counter % 1000 == 0:
                                         print(f"Logged {sample_counter} samples")
 

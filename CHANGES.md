@@ -81,6 +81,10 @@ Replaced hardcoded COM port with dynamic selection:
         '8': 'quit'
     }
 
+### Reliability Improvements
+- Added thread-safe CAN bus access to prevent command/stream conflicts.
+- `version` command now reliably receives firmware responses while streaming is active.
+
 ### New Commands
 
 #### scan_ports

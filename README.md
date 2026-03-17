@@ -81,6 +81,8 @@ Or manually:
 7. Show system information  
 8. Exit  
 
+> Note: Version queries now work reliably even while streaming (thread-safe CAN access prevents responses from being lost).
+
 ---
 
 ## Sensor Channels

@@ -260,8 +260,14 @@ Additional commands:
             'Pressure2': None,
         }
 
-        # NEW: lock to protect shared data between CLI thread + stream thread
-        self.data_lock = threading.Lock()
+        # Locks / synchronization for CAN bus access + response handling
+        self.bus_lock = threading.Lock()          # Protects access to self.bus (send/recv/shutdown)
+        self.data_lock = threading.Lock()         # Protects sensor_data/sensor_time
+
+        # Response handling (used when streaming is active)
+        self.expected_response_cmd = None
+        self.response_data = None
+        self.response_event = threading.Event()
 
         # Define CAN ID and sensor IDs
         self.CAN_ID = 0x107  # Updated to new sensor module CAN ID
@@ -282,7 +288,10 @@ Additional commands:
         
     def initialize_can_bus(self):
         """Initialize the CAN bus if not already initialized"""
-        if self.bus is None:
+        with self.bus_lock:
+            if self.bus is not None:
+                return True
+
             if CAN_CHANNEL is None:
                 print("No CAN channel configured. Use 'scan_ports' or 'set_channel' to configure a port.")
                 return False
@@ -295,7 +304,6 @@ Additional commands:
             except Exception as e:
                 print(f"Error initializing CAN bus on {CAN_CHANNEL}: {e}")
                 return False
-        return True
         
     def send_command(self, command_id, value_u32=None):
         """Send a command to the sensor module via CAN bus.
@@ -325,10 +333,11 @@ Additional commands:
                 data=message_data,
                 is_extended_id=False
             )
-            self.bus.send(msg)
+            with self.bus_lock:
+                self.bus.send(msg)
             return True
         except Exception as e:
-            print(f"Error sending command: {e}")
+            print(f"Error sending command {hex(command_id)}: {e}")
             return False
 
     def do_set_outdir(self, arg):
@@ -392,7 +401,8 @@ Additional commands:
 
                 while self.streaming:
                     # Wake up at least every 0.1s even if no CAN messages arrive
-                    msg = self.bus.recv(timeout=0.1)
+                    with self.bus_lock:
+                        msg = self.bus.recv(timeout=0.1)
                     current_time = datetime.datetime.now()
 
                     handled = False
@@ -473,6 +483,11 @@ Additional commands:
                                 major, minor, patch, build = msg.data[4], msg.data[5], msg.data[6], msg.data[7]
                                 self.version = f"{major}.{minor}.{patch}.{build}"
                                 print(f"Received firmware version: {self.version}")
+
+                                # If a command is waiting for this response, wake it up
+                                if self.expected_response_cmd == cmd_id:
+                                    self.response_data = (major, minor, patch, build)
+                                    self.response_event.set()
                             else:
                                 # Generic status/value in bytes 4..7
                                 val = (msg.data[4] << 24) | (msg.data[5] << 16) | (msg.data[6] << 8) | msg.data[7]
@@ -489,21 +504,41 @@ Additional commands:
 
     def do_version(self, arg):
         """Display the version of the sensor module firmware"""
-        if self.send_command(self.CMD_VERSION):
-            print("Version request sent to sensor module. Waiting for response...")
-            
-            # Wait for response with timeout
+        # Prepare for a response (the stream thread will signal this event)
+        self.response_event.clear()
+        self.expected_response_cmd = self.CMD_VERSION
+        self.response_data = None
+
+        if not self.send_command(self.CMD_VERSION):
+            print("Failed to send version request command")
+            print(f"Local version: {self.version}")
+            self.expected_response_cmd = None
+            return
+
+        print("Version request sent to sensor module. Waiting for response...")
+
+        if self.streaming:
+            # When streaming, the stream thread is responsible for consuming CAN frames
+            if self.response_event.wait(timeout=5):
+                major, minor, patch, build = self.response_data
+                self.version = f"{major}.{minor}.{patch}.{build}"
+                print(f"Sensor module firmware version: {self.version}")
+            else:
+                print("No response received from sensor module. Using local version.")
+                print(f"Local version: {self.version}")
+        else:
+            # When not streaming, read directly from the bus (protected by lock)
             try:
                 if not self.initialize_can_bus():
                     print("Failed to initialize CAN bus")
                     return
-                    
-                # Set a timeout for waiting for the response (5 seconds)
+
                 start_time = datetime.datetime.now()
                 timeout = 5  # seconds
-                
+
                 while (datetime.datetime.now() - start_time).total_seconds() < timeout:
-                    msg = self.bus.recv(1)
+                    with self.bus_lock:
+                        msg = self.bus.recv(1)
 
                     if msg and msg.arbitration_id == PC_RESP_ID and len(msg.data) == 8:
                         cmd_id = msg.data[3]
@@ -512,17 +547,15 @@ Additional commands:
                             self.version = f"{major}.{minor}.{patch}.{build}"
                             print(f"Sensor module firmware version: {self.version}")
                             return
-                
-                # If we get here, we timed out waiting for a response
+
                 print("No response received from sensor module. Using local version.")
                 print(f"Local version: {self.version}")
-                
+
             except Exception as e:
                 print(f"Error receiving version response: {e}")
                 print(f"Local version: {self.version}")
-        else:
-            print("Failed to send version request command")
-            print(f"Local version: {self.version}")
+
+        self.expected_response_cmd = None
 
     def do_start(self, arg):
         """Start real-time sensor streaming"""

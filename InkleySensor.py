@@ -212,6 +212,7 @@ Inkey Sensor CLI Menu:
   6 - Scan and select CAN ports
   7 - Show system information
   8 - Exit program
+  9 - Read stored flash data
 
 Additional commands:
   set_channel      - Set the COM port for the CANable interface
@@ -219,6 +220,7 @@ Additional commands:
   system_info      - Display OS and port information
   set_outdir       - Set output directory for CSV logging
   set_filename     - Set CSV filename for logging
+  read_flash       - Download stored flash data and save to CSV
 """
     prompt = "> "
     
@@ -231,7 +233,8 @@ Additional commands:
         '5': 'readings',
         '6': 'scan_ports',
         '7': 'system_info',
-        '8': 'quit'
+        '8': 'quit',
+        '9': 'read_flash'
     }
 
     def __init__(self):
@@ -283,6 +286,7 @@ Additional commands:
         self.CMD_STREAM_BUFFER = 0x03
         self.CMD_STOP_STREAM = 0x04
         self.CMD_GET_READINGS = 0x05
+        self.CMD_READ_FLASH = 0x07
         
         self.version = "1.0.0"
         
@@ -626,6 +630,57 @@ Additional commands:
                 print(f"{sensor}: {value if value is not None else 'No data'}")
         else:
             print("Failed to send reading request command")
+
+    def do_read_flash(self, arg):
+        """Read stored flash data from the module (requires stop streaming)."""
+        if self.streaming:
+            print("Stop streaming before reading flash data.")
+            return
+
+        if not self.send_command(self.CMD_READ_FLASH):
+            print("Failed to send read flash request")
+            return
+
+        print("Read flash request sent. Receiving stored samples...")
+
+        if not self.initialize_can_bus():
+            print("Failed to initialize CAN bus")
+            return
+
+        samples = []
+        start_time = datetime.datetime.now()
+        timeout = 10
+
+        while (datetime.datetime.now() - start_time).total_seconds() < timeout:
+            msg = self.bus.recv(1)
+            if not msg or msg.arbitration_id != PC_RESP_ID or len(msg.data) != 8:
+                continue
+
+            cmd_id = msg.data[3]
+            if cmd_id != self.CMD_READ_FLASH:
+                continue
+
+            value = (msg.data[4] << 24) | (msg.data[5] << 16) | (msg.data[6] << 8) | msg.data[7]
+
+            # End of transfer marker (value == 0)
+            if value == 0:
+                break
+
+            p1 = (value >> 16) & 0xFFFF
+            p2 = value & 0xFFFF
+            samples.append((p1, p2))
+
+        if samples:
+            out_path = self._make_output_path()
+            with open(out_path, mode='w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Timestamp', 'Pressure1', 'Pressure2'])
+                now = datetime.datetime.now()
+                for i, (p1, p2) in enumerate(samples):
+                    writer.writerow([now.isoformat(timespec="milliseconds"), p1, p2])
+            print(f"Saved {len(samples)} samples to {out_path.resolve()}")
+        else:
+            print("No stored samples received (timeout or empty record)")
         
     def default(self, line):
         """Handle numbered commands"""

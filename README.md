@@ -80,6 +80,7 @@ Or manually:
 6. Scan and select CAN ports  
 7. Show system information  
 8. Exit  
+9. Read stored flash data  
 
 > Note: Version queries now work reliably even while streaming (thread-safe CAN access prevents responses from being lost).
 

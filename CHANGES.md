@@ -138,4 +138,5 @@ VID/PID Examples:
 
 - Pressure2 streaming updates integrated
 - Data logging improvements ongoing
+- Fixed real-time streaming halting after ~1000 samples by reducing CAN bus load and buffering CSV writes
 - Future work: configuration file support and auto-connect profiles

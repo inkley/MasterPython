@@ -6,7 +6,7 @@ Inkley_SensorCommander (Python CLI)
 - Supports:
     * Query firmware version (ACK via PC_RESP_ID)
     * Start/stop real-time streaming
-    * Stream buffered mode (placeholder on firmware side if not implemented)
+    * Read back stored flash data from the module
     * Request current readings (command-based)
     * Scan and select serial/CAN interface ports
     * Set logging output directory + CSV filename
@@ -203,16 +203,15 @@ def select_can_port():
 
 class CANBusCommander(cmd.Cmd):
     intro = """Inkley Sensor Command Line Interface. Type 'help' for commands.\n
-Inkey Sensor CLI Menu:
+Inkley Sensor CLI Menu:
   1 - Display version
   2 - Start real-time streaming
-  3 - Stream buffered data
-  4 - Stop streaming
+  3 - Stop streaming
+  4 - Read stored flash data
   5 - Display current readings
   6 - Scan and select CAN ports
   7 - Show system information
   8 - Exit program
-  9 - Read stored flash data
 
 Additional commands:
   set_channel      - Set the COM port for the CANable interface
@@ -220,6 +219,7 @@ Additional commands:
   system_info      - Display OS and port information
   set_outdir       - Set output directory for CSV logging
   set_filename     - Set CSV filename for logging
+  set_buffer_size  - Set the RAM buffer size (samples) used while streaming
   read_flash       - Download stored flash data and save to CSV
 """
     prompt = "> "
@@ -228,13 +228,12 @@ Additional commands:
     COMMAND_MAP = {
         '1': 'version',
         '2': 'start',
-        '3': 'stream_buffer',
-        '4': 'stop',
+        '3': 'stop',
+        '4': 'read_flash',
         '5': 'readings',
         '6': 'scan_ports',
         '7': 'system_info',
-        '8': 'quit',
-        '9': 'read_flash'
+        '8': 'quit'
     }
 
     def __init__(self):
@@ -286,6 +285,7 @@ Additional commands:
         self.CMD_STREAM_BUFFER = 0x03
         self.CMD_STOP_STREAM = 0x04
         self.CMD_GET_READINGS = 0x05
+        self.CMD_STREAM_BUFFER_SET = 0x06
         self.CMD_READ_FLASH = 0x07
         
         self.version = "1.0.0"
@@ -403,6 +403,13 @@ Additional commands:
                 write_period_s = 1.0
                 stale_after_s = 2.0
 
+                # Buffer rows in memory and flush in batches to avoid slow per-row I/O.
+                buffered_rows = []
+                flush_every = 2000
+
+                frames_received = 0
+                no_msg_ticks = 0
+
                 while self.streaming:
                     # Wake up at least every 0.1s even if no CAN messages arrive
                     with self.bus_lock:
@@ -411,74 +418,85 @@ Additional commands:
 
                     handled = False
 
-                    # Only parse if we actually received a message
-                    if msg is not None:
-                        # --- Special-case: broadcast realtime frames from Tiva (ID 0x7DF) ---
-                        if msg.arbitration_id == 0x7DF and len(msg.data) == 8:
-                            frame_type = msg.data[0]
-                            sensor_id  = msg.data[1]
+                    if msg is None:
+                        no_msg_ticks += 1
+                        # Report if we haven't seen any CAN frames for 5 seconds
+                        if no_msg_ticks == 50:
+                            print("No CAN frames received for 5 seconds (is the module still streaming?)")
+                        continue
 
-                            if frame_type in (0x05, 0x06):
+                    no_msg_ticks = 0
+                    frames_received += 1
 
-                                # -------- NEW PACKED MODE --------
-                                if sensor_id == 0x12:   # packed P1 + P2
-                                    if frame_type == 0x05:
-                                        # Legacy 1-sample-per-frame mode
-                                        p1 = (msg.data[2] << 8) | msg.data[3]
-                                        p2 = (msg.data[4] << 8) | msg.data[5]
+                    # --- Special-case: broadcast realtime frames from Tiva (ID 0x7DF) ---
+                    if msg.arbitration_id == 0x7DF and len(msg.data) == 8:
+                        frame_type = msg.data[0]
+                        sensor_id  = msg.data[1]
 
-                                        with self.data_lock:
-                                            self.sensor_data['Pressure1'] = p1
-                                            self.sensor_time['Pressure1'] = current_time
-                                            self.sensor_data['Pressure2'] = p2
-                                            self.sensor_time['Pressure2'] = current_time
 
-                                        # Write every sample (1000 Hz)
-                                        writer.writerow([current_time.isoformat(timespec="milliseconds"), p1, p2])
-                                        sample_counter += 1   # increment
+                        if frame_type in (0x05, 0x06):
 
-                                    else:
-                                        # New 2-samples-per-frame mode (reduced bus load)
-                                        # Frame payload (bytes 2..7) holds two 12-bit P1/P2 samples.
-                                        # Layout (each sample = p1 (12b) + p2 (12b)):
-                                        #   [2..4] = sample A
-                                        #   [5..7] = sample B
-                                        p1_a = (msg.data[2] << 4) | (msg.data[3] >> 4)
-                                        p2_a = ((msg.data[3] & 0x0F) << 8) | msg.data[4]
-                                        p1_b = (msg.data[5] << 4) | (msg.data[6] >> 4)
-                                        p2_b = ((msg.data[6] & 0x0F) << 8) | msg.data[7]
-
-                                        with self.data_lock:
-                                            # Update latest values for each pressure channel
-                                            self.sensor_data['Pressure1'] = p1_b
-                                            self.sensor_time['Pressure1'] = current_time
-                                            self.sensor_data['Pressure2'] = p2_b
-                                            self.sensor_time['Pressure2'] = current_time
-
-                                        # Write both samples (assume 0.5ms spacing between samples)
-                                        writer.writerow([current_time.isoformat(timespec="milliseconds"), p1_a, p2_a])
-                                        writer.writerow([(current_time + datetime.timedelta(microseconds=500)).isoformat(timespec="milliseconds"), p1_b, p2_b])
-                                        sample_counter += 2
-
-                                    # Flush every 1000 samples (~1 second at 1 kHz)
-                                    if sample_counter % 1000 == 0:
-                                        file.flush()
-
-                                    if sample_counter % 1000 == 0:
-                                        print(f"Logged {sample_counter} samples")
-
-                                # -------- OLD SINGLE SENSOR MODE (keep for safety) --------
-                                elif sensor_id in self.SENSOR_IDS:
-                                    value = struct.unpack('>I', bytes(msg.data[4:8]))[0]
-                                    name = self.SENSOR_IDS[sensor_id]
+                            # -------- NEW PACKED MODE --------
+                            if sensor_id == 0x12:   # packed P1 + P2
+                                if frame_type == 0x05:
+                                    # Legacy 1-sample-per-frame mode
+                                    p1 = (msg.data[2] << 8) | msg.data[3]
+                                    p2 = (msg.data[4] << 8) | msg.data[5]
 
                                     with self.data_lock:
-                                        self.sensor_data[name] = value
-                                        self.sensor_time[name] = current_time
+                                        self.sensor_data['Pressure1'] = p1
+                                        self.sensor_time['Pressure1'] = current_time
+                                        self.sensor_data['Pressure2'] = p2
+                                        self.sensor_time['Pressure2'] = current_time
 
-                                    print(f"[BC] {name}: {value}")
+                                    # Buffer each sample and flush periodically to reduce I/O overhead.
+                                    buffered_rows.append([current_time.isoformat(timespec="milliseconds"), p1, p2])
+                                    sample_counter += 1   # increment
 
-                            handled = True
+                                else:
+                                    # New 2-samples-per-frame mode (reduced bus load)
+                                    # Frame payload (bytes 2..7) holds two 12-bit P1/P2 samples.
+                                    # Layout (each sample = p1 (12b) + p2 (12b)):
+                                    #   [2..4] = sample A
+                                    #   [5..7] = sample B
+                                    p1_a = (msg.data[2] << 4) | (msg.data[3] >> 4)
+                                    p2_a = ((msg.data[3] & 0x0F) << 8) | msg.data[4]
+                                    p1_b = (msg.data[5] << 4) | (msg.data[6] >> 4)
+                                    p2_b = ((msg.data[6] & 0x0F) << 8) | msg.data[7]
+
+                                    with self.data_lock:
+                                        # Update latest values for each pressure channel
+                                        self.sensor_data['Pressure1'] = p1_b
+                                        self.sensor_time['Pressure1'] = current_time
+                                        self.sensor_data['Pressure2'] = p2_b
+                                        self.sensor_time['Pressure2'] = current_time
+
+                                    # Buffer both samples (assume 0.5ms spacing between samples)
+                                    buffered_rows.append([current_time.isoformat(timespec="milliseconds"), p1_a, p2_a])
+                                    buffered_rows.append([(current_time + datetime.timedelta(microseconds=500)).isoformat(timespec="milliseconds"), p1_b, p2_b])
+                                    sample_counter += 2
+
+                                # Flush every flush_every samples (reduce per-sample I/O overhead)
+                                if sample_counter % flush_every == 0:
+                                    writer.writerows(buffered_rows)
+                                    file.flush()
+                                    buffered_rows.clear()
+
+                                if sample_counter % 1000 == 0:
+                                    print(f"Logged {sample_counter} samples")
+
+                            # -------- OLD SINGLE SENSOR MODE (keep for safety) --------
+                            elif sensor_id in self.SENSOR_IDS:
+                                value = struct.unpack('>I', bytes(msg.data[4:8]))[0]
+                                name = self.SENSOR_IDS[sensor_id]
+
+                                with self.data_lock:
+                                    self.sensor_data[name] = value
+                                    self.sensor_time[name] = current_time
+
+                                print(f"[BC] {name}: {value}")
+
+                        handled = True
 
                         # Handle ACK/response frames coming back to the PC
                         if msg is not None and msg.arbitration_id == PC_RESP_ID and len(msg.data) == 8:
@@ -497,6 +515,15 @@ Additional commands:
                                 val = (msg.data[4] << 24) | (msg.data[5] << 16) | (msg.data[6] << 8) | msg.data[7]
                                 print(f"ACK cmd={hex(cmd_id)} value={val}")
                             continue
+
+                # Flush any remaining buffered samples before closing the file
+                if buffered_rows:
+                    writer.writerows(buffered_rows)
+                    file.flush()
+                    buffered_rows.clear()
+
+                # Streaming loop exited (self.streaming set to False or loop ended)
+                print(f"Streaming loop exited after logging {sample_counter} samples")
 
         except Exception as e:
             print(f"Streaming error: {e}")
@@ -574,19 +601,6 @@ Additional commands:
         else:
             print("Streaming is already active")
 
-    def do_stream_buffer(self, arg):
-        """Stream buffered sensor streaming"""
-        if not self.streaming:
-            if self.send_command(self.CMD_STREAM_BUFFER):
-                self.streaming = True
-                self.stream_thread = threading.Thread(target=self.stream_data, daemon=True)
-                self.stream_thread.start()
-                print("Started streaming buffered data")
-            else:
-                print("Failed to send stream buffer command")
-        else:
-            print("Streaming is already active")
-
     def do_stop(self, arg):
         """Stop streaming"""
         if self.streaming:
@@ -617,6 +631,23 @@ Additional commands:
         """Alias for quit command"""
         return self.do_quit(arg)
         
+    def do_set_buffer_size(self, arg):
+        """Set the RAM buffer size used while streaming (command 6)."""
+        try:
+            size = int(arg.strip())
+        except Exception:
+            print("Usage: set_buffer_size <samples> (e.g., set_buffer_size 8192)")
+            return
+
+        if size <= 0:
+            print("Buffer size must be positive")
+            return
+
+        if self.send_command(self.CMD_STREAM_BUFFER_SET, size):
+            print(f"Requested buffer size set to {size} (module may cap it)")
+        else:
+            print("Failed to send buffer size command")
+
     def do_readings(self, arg):
         """Display current sensor readings"""
         if self.send_command(self.CMD_GET_READINGS):
@@ -637,7 +668,10 @@ Additional commands:
             print("Stop streaming before reading flash data.")
             return
 
-        if not self.send_command(self.CMD_READ_FLASH):
+        # The firmware streams flash data in response to the "stream buffered" command
+        # (CMD_STREAM_BUFFER = 0x03). The flash playback frames are tagged as CMD_READ_FLASH
+        # (0x07) in the response payload.
+        if not self.send_command(self.CMD_STREAM_BUFFER):
             print("Failed to send read flash request")
             return
 
@@ -648,27 +682,69 @@ Additional commands:
             return
 
         samples = []
+        record_count = None
+        samples_received = 0
         start_time = datetime.datetime.now()
-        timeout = 10
+        timeout = 30  # seconds (flash read/response can take longer on some modules)
 
+        saw_unexpected = False
+        saw_any_data = False
+        received_debug_messages = 0
         while (datetime.datetime.now() - start_time).total_seconds() < timeout:
             msg = self.bus.recv(1)
-            if not msg or msg.arbitration_id != PC_RESP_ID or len(msg.data) != 8:
+            if not msg or len(msg.data) != 8:
                 continue
 
             cmd_id = msg.data[3]
+            value = (msg.data[4] << 24) | (msg.data[5] << 16) | (msg.data[6] << 8) | msg.data[7]
+
+            # Help diagnose why the module is not responding to the flash playback request.
+            # Print the first few received messages while waiting for the response.
+            if received_debug_messages < 10:
+                print(f"RX  ID=0x{msg.arbitration_id:03X} data={msg.data.hex()} cmd=0x{cmd_id:02X}")
+                received_debug_messages += 1
+
+            # First response should be the buffered-stream reply: command=CMD_STREAM_BUFFER
+            # and value = number of stored records (may be 0).
+            if cmd_id == self.CMD_STREAM_BUFFER:
+                record_count = value
+                print(f"Flash record count: {record_count}")
+                if record_count == 0:
+                    break
+                continue
+
+            # Show all incoming frames (after count) to help diagnose what the module sends
+            if record_count is not None and not saw_any_data:
+                print("-- now listening for flash payload frames --")
+                saw_any_data = True
+
+            print(f"RECV ID=0x{msg.arbitration_id:03X} cmd=0x{cmd_id:02X} data={msg.data.hex()}")
+
+            # Flash playback frames are tagged CMD_READ_FLASH and contain packed samples.
             if cmd_id != self.CMD_READ_FLASH:
                 continue
 
-            value = (msg.data[4] << 24) | (msg.data[5] << 16) | (msg.data[6] << 8) | msg.data[7]
+            # Collect up to record_count samples (don't treat value==0 as terminator)
+            if samples_received < record_count:
+                p1 = (value >> 16) & 0xFFFF
+                p2 = value & 0xFFFF
+                samples.append((p1, p2))
+                samples_received += 1
 
-            # End of transfer marker (value == 0)
-            if value == 0:
+            # Stop when we've collected the expected number of samples
+            if samples_received >= record_count:
                 break
 
-            p1 = (value >> 16) & 0xFFFF
-            p2 = value & 0xFFFF
-            samples.append((p1, p2))
+        if record_count is None:
+            print("No response received for buffered-stream request (cmd 0x03).")
+            return
+
+        if record_count == 0:
+            print("No flash record present on the module.")
+            return
+
+        if samples_received != record_count:
+            print(f"Warning: expected {record_count} samples but received {samples_received}.")
 
         if samples:
             out_path = self._make_output_path()

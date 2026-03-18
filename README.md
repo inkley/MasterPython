@@ -74,13 +74,12 @@ Or manually:
 
 1. Display firmware version  
 2. Start real-time streaming  
-3. Stream buffered data  
-4. Stop streaming  
+3. Stop streaming  
+4. Read stored flash data  
 5. Display current readings  
 6. Scan and select CAN ports  
 7. Show system information  
 8. Exit  
-9. Read stored flash data  
 
 > Note: Version queries now work reliably even while streaming (thread-safe CAN access prevents responses from being lost).
 

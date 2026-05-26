@@ -6,7 +6,7 @@ Inkley_SensorCommander (Python CLI)
 - Supports:
     * Query firmware version (ACK via PC_RESP_ID)
     * Start/stop real-time streaming
-    * Read back stored flash data from the module
+    * Dump buffered samples from the module
     * Request current readings (command-based)
     * Scan and select serial/CAN interface ports
     * Set logging output directory + CSV filename
@@ -207,7 +207,7 @@ Inkley Sensor CLI Menu:
   1 - Display version
   2 - Start real-time streaming
   3 - Stop streaming
-  4 - Read stored flash data
+  4 - Dump buffered sensor data
   5 - Display current readings
   6 - Scan and select CAN ports
   7 - Show system information
@@ -220,7 +220,8 @@ Additional commands:
   set_outdir       - Set output directory for CSV logging
   set_filename     - Set CSV filename for logging
   set_buffer_size  - Set the RAM buffer size (samples) used while streaming
-  read_flash       - Download stored flash data and save to CSV
+  dump_buffer      - Download buffered sample data and save to CSV
+  read_flash       - Backward-compatible alias for dump_buffer
 """
     prompt = "> "
     
@@ -229,7 +230,7 @@ Additional commands:
         '1': 'version',
         '2': 'start',
         '3': 'stop',
-        '4': 'read_flash',
+        '4': 'dump_buffer',
         '5': 'readings',
         '6': 'scan_ports',
         '7': 'system_info',
@@ -286,6 +287,8 @@ Additional commands:
         self.CMD_STOP_STREAM = 0x04
         self.CMD_GET_READINGS = 0x05
         self.CMD_STREAM_BUFFER_SET = 0x06
+        # Historical firmware labels buffered playback frames as READ_FLASH.
+        # Keep the wire value stable while presenting the workflow as a RAM buffer dump.
         self.CMD_READ_FLASH = 0x07
         
         self.version = "1.0.0"
@@ -343,6 +346,21 @@ Additional commands:
         except Exception as e:
             print(f"Error sending command {hex(command_id)}: {e}")
             return False
+
+    def _drain_pending_can_messages(self, max_messages=100):
+        """Discard already-queued CAN frames before starting a request/response flow."""
+        if self.bus is None:
+            return 0
+
+        drained = 0
+        with self.bus_lock:
+            while drained < max_messages:
+                msg = self.bus.recv(timeout=0)
+                if msg is None:
+                    break
+                drained += 1
+
+        return drained
 
     def do_set_outdir(self, arg):
         """Set output directory (e.g., set_outdir C:\\data\\run1  OR  set_outdir ./data/run1)"""
@@ -662,89 +680,112 @@ Additional commands:
         else:
             print("Failed to send reading request command")
 
-    def do_read_flash(self, arg):
-        """Read stored flash data from the module (requires stop streaming)."""
+    def do_dump_buffer(self, arg):
+        """Dump buffered sample data from the module (requires stop streaming)."""
         if self.streaming:
-            print("Stop streaming before reading flash data.")
+            print("Stop streaming before dumping buffered data.")
             return
 
-        # The firmware streams flash data in response to the "stream buffered" command
-        # (CMD_STREAM_BUFFER = 0x03). The flash playback frames are tagged as CMD_READ_FLASH
-        # (0x07) in the response payload.
-        if not self.send_command(self.CMD_STREAM_BUFFER):
-            print("Failed to send read flash request")
-            return
-
-        print("Read flash request sent. Receiving stored samples...")
-
+        # The firmware streams stored/buffered data in response to CMD_STREAM_BUFFER
+        # (0x03). Existing firmware may still tag playback frames as CMD_READ_FLASH
+        # (0x07), so the PC side accepts that historical frame type.
         if not self.initialize_can_bus():
             print("Failed to initialize CAN bus")
             return
+
+        drained = self._drain_pending_can_messages()
+        if drained:
+            print(f"Discarded {drained} queued CAN frame(s) before buffer dump request.")
+
+        if not self.send_command(self.CMD_STREAM_BUFFER):
+            print("Failed to send buffer dump request")
+            return
+
+        print("Buffer dump request sent. Receiving stored samples...")
 
         samples = []
         record_count = None
         samples_received = 0
         start_time = datetime.datetime.now()
-        timeout = 30  # seconds (flash read/response can take longer on some modules)
+        timeout = 30  # seconds (stored-data playback can take longer on some modules)
 
-        saw_unexpected = False
         saw_any_data = False
         received_debug_messages = 0
+        payload_debug_limit = 5
+        next_progress_report = 1000
         while (datetime.datetime.now() - start_time).total_seconds() < timeout:
-            msg = self.bus.recv(1)
+            with self.bus_lock:
+                msg = self.bus.recv(1)
             if not msg or len(msg.data) != 8:
                 continue
 
             cmd_id = msg.data[3]
             value = (msg.data[4] << 24) | (msg.data[5] << 16) | (msg.data[6] << 8) | msg.data[7]
 
-            # Help diagnose why the module is not responding to the flash playback request.
+            # Help diagnose why the module is not responding to the buffer playback request.
             # Print the first few received messages while waiting for the response.
-            if received_debug_messages < 10:
+            if record_count is None and received_debug_messages < 5:
                 print(f"RX  ID=0x{msg.arbitration_id:03X} data={msg.data.hex()} cmd=0x{cmd_id:02X}")
                 received_debug_messages += 1
+
+            if msg.arbitration_id != PC_RESP_ID:
+                continue
 
             # First response should be the buffered-stream reply: command=CMD_STREAM_BUFFER
             # and value = number of stored records (may be 0).
             if cmd_id == self.CMD_STREAM_BUFFER:
                 record_count = value
-                print(f"Flash record count: {record_count}")
+                print(f"Buffered record count: {record_count}")
                 if record_count == 0:
                     break
                 continue
 
+            if record_count is None:
+                if cmd_id == self.CMD_READ_FLASH:
+                    print("Ignoring buffered payload/end frame received before record count.")
+                else:
+                    print(f"Ignoring response cmd=0x{cmd_id:02X} while waiting for buffer count.")
+                continue
+
             # Show all incoming frames (after count) to help diagnose what the module sends
             if record_count is not None and not saw_any_data:
-                print("-- now listening for flash payload frames --")
+                print("-- now listening for buffered payload frames --")
                 saw_any_data = True
 
-            print(f"RECV ID=0x{msg.arbitration_id:03X} cmd=0x{cmd_id:02X} data={msg.data.hex()}")
-
-            # Flash playback frames are tagged CMD_READ_FLASH and contain packed samples.
+            # Buffered playback frames are currently tagged CMD_READ_FLASH by firmware.
             if cmd_id != self.CMD_READ_FLASH:
                 continue
 
             # Collect up to record_count samples (don't treat value==0 as terminator)
             if samples_received < record_count:
+                if samples_received < payload_debug_limit:
+                    print(f"RECV ID=0x{msg.arbitration_id:03X} cmd=0x{cmd_id:02X} data={msg.data.hex()}")
+
                 p1 = (value >> 16) & 0xFFFF
                 p2 = value & 0xFFFF
                 samples.append((p1, p2))
                 samples_received += 1
+
+                if samples_received >= next_progress_report and samples_received < record_count:
+                    print(f"Received {samples_received}/{record_count} buffered samples...")
+                    next_progress_report += 1000
 
             # Stop when we've collected the expected number of samples
             if samples_received >= record_count:
                 break
 
         if record_count is None:
-            print("No response received for buffered-stream request (cmd 0x03).")
+            print("No response received for buffer dump request (cmd 0x03).")
             return
 
         if record_count == 0:
-            print("No flash record present on the module.")
+            print("No buffered records present on the module.")
             return
 
         if samples_received != record_count:
             print(f"Warning: expected {record_count} samples but received {samples_received}.")
+        else:
+            print(f"Received all {samples_received} buffered samples.")
 
         if samples:
             out_path = self._make_output_path()
@@ -757,6 +798,10 @@ Additional commands:
             print(f"Saved {len(samples)} samples to {out_path.resolve()}")
         else:
             print("No stored samples received (timeout or empty record)")
+
+    def do_read_flash(self, arg):
+        """Backward-compatible alias for dump_buffer."""
+        return self.do_dump_buffer(arg)
         
     def default(self, line):
         """Handle numbered commands"""

@@ -1,171 +1,160 @@
-# MasterPython – Inkley Sensor CAN Interface
+# MasterPython - Inkley Sensor CAN Interface
 
-Python-based command-line interface for communicating with Inkley hydrodynamic sensor modules over CAN bus.
+Python command-line tools for communicating with Inkley pressure sensor modules
+over CAN bus. The CLI is used for lab testing, firmware validation, real-time
+CSV logging, and RAM-buffer dump retrieval.
 
-Designed for laboratory testing, firmware validation, and data logging within the Inkley Sensor Module ecosystem.
+## Features
 
----
+- Query firmware version over CAN.
+- Start and stop real-time pressure streaming.
+- Log real-time samples to CSV.
+- Set the firmware RAM buffer size.
+- Dump RAM-buffered samples after streaming stops.
+- Scan for likely SLCAN-compatible USB CAN adapters.
 
-## Overview
-
-This application enables:
-
-- Real-time pressure and temperature streaming
-- Buffered CAN message retrieval
-- Intelligent CAN port detection
-- Cross-platform compatibility
-- Automated CSV logging
-
-Built for use with CANable, CANdo, and other SLCAN-compatible USB CAN interfaces.
-
----
+`read_flash` remains available as a compatibility alias, but current firmware
+validation should use `dump_buffer`.
 
 ## Requirements
 
-    pip install python-can pyserial
+```powershell
+pip install python-can pyserial
+```
 
----
-
-## Supported CAN Interfaces
-
-Automatically detects:
-
-- CANable
-- CANdo
-- CANtact
-- USB2CAN
-- PEAK CAN
-- Kvaser
-- STM32-based CAN devices
-
----
-
-## Project Structure
-
-    MasterPython/
-    │
-    ├── InkleySensor.py
-    ├── Archive/
-    ├── Data/
-    ├── CHANGES.md
-    └── README.md
-
----
+Supported adapters include CANable, CANdo, CANtact, USB2CAN, PEAK, Kvaser, and
+STM32-based SLCAN devices.
 
 ## Quick Start
 
-### Launch Application
+```powershell
+python .\InkleySensor.py
+```
 
-    python InkleySensor.py
+Inside the CLI:
 
-### If No Port Configured
+```text
+scan_ports
+set_channel COM5
+version
+```
 
-Select:
+Use the COM port reported for your CAN adapter.
 
-    6 – Scan and select CAN ports
+## Common Commands
 
-Or manually:
+- `version` - request the firmware build/version.
+- `start` - start real-time CAN broadcast logging.
+- `stop` - stop real-time streaming.
+- `set_filename <file.csv>` - set the CSV output filename under `Data/`.
+- `set_outdir <path>` - set the CSV output directory.
+- `set_buffer_size <samples>` - request a RAM buffer capacity.
+- `dump_buffer` - download stored RAM samples to CSV.
+- `read_flash` - alias for `dump_buffer`.
 
-    set_channel COM8
+Menu numbers are also supported:
 
----
+1. Display firmware version
+2. Start real-time streaming
+3. Stop streaming
+4. Dump buffered sensor data
+5. Display current readings
+6. Scan and select CAN ports
+7. Show system information
+8. Exit
 
-## Menu Options
+## CAN Protocol Summary
 
-1. Display firmware version  
-2. Start real-time streaming  
-3. Stop streaming  
-4. Read stored flash data  
-5. Display current readings  
-6. Scan and select CAN ports  
-7. Show system information  
-8. Exit  
+- Interface: SLCAN
+- Bitrate: 1 Mbps
+- Command CAN ID: `0x107`
+- PC response CAN ID: `0x108`
+- Realtime broadcast CAN ID: `0x7DF`
+- Frame size: 8 bytes
+- Realtime packed frame type: `0x06`
+- Buffered playback frame tag: `0x07`
 
-> Note: Version queries now work reliably even while streaming (thread-safe CAN access prevents responses from being lost).
+Realtime frames pack two pressure samples per CAN frame. Buffered dump frames
+return one stored `Pressure1`/`Pressure2` sample pair per response frame.
 
----
+## RAM Buffer Validation
 
-## Sensor Channels
+The firmware stores samples in MCU RAM while real-time streaming is active.
+After `stop`, use `dump_buffer` to retrieve the stored records.
 
-- Pressure1  
-- Pressure2  
-- Temperature1  
-- Temperature2  
+Empty-buffer test after power cycle:
 
-Data automatically logs to:
+```text
+version
+dump_buffer
+```
 
-    Data/Inkley_sensor_data.csv
+Expected result:
 
----
+```text
+Buffered record count: 0
+No buffered records present on the module.
+```
 
-## CAN Configuration
+Circular-buffer wrap test:
 
-- Interface: SLCAN  
-- Bitrate: 1 Mbps  
-- CAN ID: 0x107  
-- Frame Size: 8 bytes  
-- Optimized frame packing: two samples (P1+P2 each) per broadcast frame (frame_type=0x06)
+```text
+set_buffer_size 256
+set_filename realtime_wrap.csv
+start
+```
 
----
+Wait 2-5 seconds, then:
 
-## Port Detection Logic
+```text
+stop
+set_filename buffer_wrap.csv
+dump_buffer
+```
 
-The application:
+Expected result: `Buffered record count: 256`.
 
-1. Scans all serial ports  
-2. Identifies likely CAN devices using:
-   - Keywords
-   - Manufacturer strings
-   - VID/PID matching
-3. Separates CAN candidates from other devices  
-4. Displays detailed port metadata  
+Max-capacity guard test:
 
----
+```text
+set_buffer_size 999999
+set_filename realtime_maxcap.csv
+start
+```
 
-## Cross-Platform Support
+Wait about 5 seconds, then:
 
-### Windows
-- Detects COM ports
-- Compatible with SLCAN devices
+```text
+stop
+set_filename buffer_maxcap.csv
+dump_buffer
+```
 
-### macOS
-- Detects /dev/tty.* and /dev/cu.* devices
+Expected result: the firmware caps the request at `4094` samples and saves
+`Data/buffer_maxcap.csv`.
 
-### Linux
-- Detects /dev/ttyUSB*, /dev/ttyACM*, and other serial devices
+## Project Structure
 
----
+```text
+MasterPython/
+|-- InkleySensor.py
+|-- BUFFER_DUMP_TEST_WORKFLOW.md
+|-- Data/
+|-- CHANGES.md
+`-- README.md
+```
 
 ## Troubleshooting
 
-### No Ports Found
-- Verify USB connection
-- Install drivers
-- Try running as administrator
+- If no ports are found, verify the USB CAN adapter connection and driver.
+- On Windows, set the adapter explicitly with `set_channel COMx`.
+- On Linux, ensure the user has serial permissions, for example:
 
-### Linux Permissions
-
-    sudo usermod -a -G dialout $USER
-
----
-
-## Development Notes
-
-Key functions:
-
-- detect_os()
-- scan_can_ports()
-- select_can_port()
-- initialize_can_bus()
-
-Planned improvements:
-- Configuration file support
-- Auto-connect to last used port
-- Logging configuration options
-- Improved data parsing architecture
-
----
+```bash
+sudo usermod -a -G dialout $USER
+```
 
 ## Context
 
-Part of the broader Inkley Sensor Module development effort for distributed hydrodynamic sensing and CAN-enabled underwater instrumentation.
+Part of the Inkley Sensor Module development effort for distributed
+hydrodynamic sensing and CAN-enabled underwater instrumentation.

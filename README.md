@@ -49,6 +49,7 @@ Use the COM port reported for your CAN adapter.
 - `set_filename <file.csv>` - set the CSV output filename under `Data/`.
 - `set_outdir <path>` - set the CSV output directory.
 - `set_buffer_size <samples>` - request a RAM buffer capacity.
+- `buffer_status` - show firmware mode, RAM capacity, count, wrap flag, and dump state.
 - `dump_buffer` - download stored RAM samples to CSV.
 - `read_flash` - alias for `dump_buffer`.
 
@@ -58,7 +59,7 @@ Menu numbers are also supported:
 2. Start real-time streaming
 3. Stop streaming
 4. Dump buffered sensor data
-5. Display current readings
+5. Show buffer status
 6. Scan and select CAN ports
 7. Show system information
 8. Exit
@@ -72,10 +73,13 @@ Menu numbers are also supported:
 - Realtime broadcast CAN ID: `0x7DF`
 - Frame size: 8 bytes
 - Realtime packed frame type: `0x06`
-- Buffered playback frame tag: `0x07`
+- Buffered sample playback frame tag: `0x07`
 
 Realtime frames pack two pressure samples per CAN frame. Buffered dump frames
 return one stored `Pressure1`/`Pressure2` sample pair per response frame.
+Buffered sample frames carry a 16-bit sequence index in bytes `[1..2]`; the
+CLI checks this index during `dump_buffer` and writes it to the CSV as
+`SampleIndex`.
 
 ## RAM Buffer Validation
 
@@ -86,6 +90,7 @@ Empty-buffer test after power cycle:
 
 ```text
 version
+buffer_status
 dump_buffer
 ```
 
@@ -100,6 +105,7 @@ Circular-buffer wrap test:
 
 ```text
 set_buffer_size 256
+buffer_status
 set_filename realtime_wrap.csv
 start
 ```
@@ -108,6 +114,7 @@ Wait 2-5 seconds, then:
 
 ```text
 stop
+buffer_status
 set_filename buffer_wrap.csv
 dump_buffer
 ```
@@ -118,6 +125,7 @@ Max-capacity guard test:
 
 ```text
 set_buffer_size 999999
+buffer_status
 set_filename realtime_maxcap.csv
 start
 ```
@@ -126,6 +134,7 @@ Wait about 5 seconds, then:
 
 ```text
 stop
+buffer_status
 set_filename buffer_maxcap.csv
 dump_buffer
 ```
@@ -139,6 +148,7 @@ Expected result: the firmware caps the request at `4094` samples and saves
 MasterPython/
 |-- InkleySensor.py
 |-- BUFFER_DUMP_TEST_WORKFLOW.md
+|-- TEST_RESULTS.md
 |-- Data/
 |-- CHANGES.md
 `-- README.md

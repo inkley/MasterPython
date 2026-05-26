@@ -24,6 +24,7 @@ From `InkleySensor.py`:
 - `set_channel COMx`: set the adapter manually.
 - `version`: verify command/response traffic.
 - `set_buffer_size <samples>`: ask firmware to resize/cap its RAM buffer.
+- `buffer_status`: inspect mode, capacity, count, wrap flag, and dump state.
 - `start`: begin real-time CAN broadcast logging to CSV.
 - `stop`: stop real-time streaming.
 - `dump_buffer`: request stored/buffered samples and save them to CSV.
@@ -32,6 +33,10 @@ From `InkleySensor.py`:
 The wire protocol may still label playback frames as `CMD_READ_FLASH` (`0x07`).
 That is only a historical frame tag on the PC side; the intended behavior is a
 buffer dump.
+
+Current firmware keeps wire value `0x07` but treats it as buffered sample data.
+Payload frames include a 16-bit sequence index in bytes `[1..2]`; the Python
+CLI checks this during `dump_buffer` and writes it to the CSV as `SampleIndex`.
 
 ## Bench Test Sequence
 
@@ -61,6 +66,7 @@ buffer dump.
 
    ```text
    set_buffer_size 256
+   buffer_status
    ```
 
 7. Start real-time streaming for 5-10 seconds:
@@ -77,6 +83,7 @@ buffer dump.
 
    ```text
    set_filename buffer_dump_smoke.csv
+   buffer_status
    dump_buffer
    ```
 
@@ -111,7 +118,8 @@ Run these after the smoke test passes:
   size is capped.
 - `CMD_STREAM_BUFFER` returns a record count before payload frames.
 - Payload frames include enough ordering information to detect dropped or
-  reordered records. A monotonically increasing sample counter is ideal.
+  reordered records. Current buffered payload frames include a 16-bit sequence
+  index.
 - Buffer dump is disabled or clearly defined while real-time streaming is active.
 
 ## Next Hardware Storage Steps

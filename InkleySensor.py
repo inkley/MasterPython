@@ -208,7 +208,7 @@ Inkley Sensor CLI Menu:
   2 - Start real-time streaming
   3 - Stop streaming
   4 - Dump buffered sensor data
-  5 - Display current readings
+  5 - Show buffer status
   6 - Scan and select CAN ports
   7 - Show system information
   8 - Exit program
@@ -220,6 +220,7 @@ Additional commands:
   set_outdir       - Set output directory for CSV logging
   set_filename     - Set CSV filename for logging
   set_buffer_size  - Set the RAM buffer size (samples) used while streaming
+  buffer_status    - Show firmware RAM buffer status
   dump_buffer      - Download buffered sample data and save to CSV
   read_flash       - Backward-compatible alias for dump_buffer
 """
@@ -231,7 +232,7 @@ Additional commands:
         '2': 'start',
         '3': 'stop',
         '4': 'dump_buffer',
-        '5': 'readings',
+        '5': 'buffer_status',
         '6': 'scan_ports',
         '7': 'system_info',
         '8': 'quit'
@@ -286,10 +287,11 @@ Additional commands:
         self.CMD_STREAM_BUFFER = 0x03
         self.CMD_STOP_STREAM = 0x04
         self.CMD_GET_READINGS = 0x05
+        self.CMD_BUFFER_STATUS = 0x05
         self.CMD_STREAM_BUFFER_SET = 0x06
-        # Historical firmware labels buffered playback frames as READ_FLASH.
-        # Keep the wire value stable while presenting the workflow as a RAM buffer dump.
-        self.CMD_READ_FLASH = 0x07
+        self.CMD_BUFFERED_SAMPLE_DATA = 0x07
+        # Historical alias retained for older scripts/workflows.
+        self.CMD_READ_FLASH = self.CMD_BUFFERED_SAMPLE_DATA
         
         self.version = "1.0.0"
         
@@ -446,6 +448,25 @@ Additional commands:
                     no_msg_ticks = 0
                     frames_received += 1
 
+                    # Handle ACK/response frames coming back to the PC.
+                    if msg.arbitration_id == PC_RESP_ID and len(msg.data) == 8:
+                        cmd_id = msg.data[3]
+                        if cmd_id == self.CMD_VERSION:
+                            major, minor, patch, build = msg.data[4], msg.data[5], msg.data[6], msg.data[7]
+                            self.version = f"{major}.{minor}.{patch}.{build}"
+                            print(f"Received firmware version: {self.version}")
+
+                            if self.expected_response_cmd == cmd_id:
+                                self.response_data = (major, minor, patch, build)
+                                self.response_event.set()
+                        else:
+                            val = (msg.data[4] << 24) | (msg.data[5] << 16) | (msg.data[6] << 8) | msg.data[7]
+                            print(f"ACK cmd={hex(cmd_id)} value={val}")
+                            if self.expected_response_cmd == cmd_id:
+                                self.response_data = val
+                                self.response_event.set()
+                        continue
+
                     # --- Special-case: broadcast realtime frames from Tiva (ID 0x7DF) ---
                     if msg.arbitration_id == 0x7DF and len(msg.data) == 8:
                         frame_type = msg.data[0]
@@ -515,24 +536,6 @@ Additional commands:
                                 print(f"[BC] {name}: {value}")
 
                         handled = True
-
-                        # Handle ACK/response frames coming back to the PC
-                        if msg is not None and msg.arbitration_id == PC_RESP_ID and len(msg.data) == 8:
-                            cmd_id = msg.data[3]
-                            if cmd_id == self.CMD_VERSION:
-                                major, minor, patch, build = msg.data[4], msg.data[5], msg.data[6], msg.data[7]
-                                self.version = f"{major}.{minor}.{patch}.{build}"
-                                print(f"Received firmware version: {self.version}")
-
-                                # If a command is waiting for this response, wake it up
-                                if self.expected_response_cmd == cmd_id:
-                                    self.response_data = (major, minor, patch, build)
-                                    self.response_event.set()
-                            else:
-                                # Generic status/value in bytes 4..7
-                                val = (msg.data[4] << 24) | (msg.data[5] << 16) | (msg.data[6] << 8) | msg.data[7]
-                                print(f"ACK cmd={hex(cmd_id)} value={val}")
-                            continue
 
                 # Flush any remaining buffered samples before closing the file
                 if buffered_rows:
@@ -666,19 +669,89 @@ Additional commands:
         else:
             print("Failed to send buffer size command")
 
+    def _recv_u32_response(self, command_id, timeout=5):
+        """Send a command and return its uint32 response value."""
+        self.response_event.clear()
+        self.expected_response_cmd = command_id
+        self.response_data = None
+
+        if not self.send_command(command_id):
+            self.expected_response_cmd = None
+            return None
+
+        if self.streaming:
+            if self.response_event.wait(timeout=timeout):
+                value = self.response_data
+                self.expected_response_cmd = None
+                return value
+
+            self.expected_response_cmd = None
+            return None
+
+        start_time = datetime.datetime.now()
+        while (datetime.datetime.now() - start_time).total_seconds() < timeout:
+            with self.bus_lock:
+                msg = self.bus.recv(1)
+
+            if msg and msg.arbitration_id == PC_RESP_ID and len(msg.data) == 8:
+                cmd_id = msg.data[3]
+                if cmd_id == command_id:
+                    self.expected_response_cmd = None
+                    return (msg.data[4] << 24) | (msg.data[5] << 16) | (msg.data[6] << 8) | msg.data[7]
+
+        self.expected_response_cmd = None
+        return None
+
+    def do_buffer_status(self, arg):
+        """Show firmware RAM buffer status."""
+        value = self._recv_u32_response(self.CMD_BUFFER_STATUS)
+        if value is None:
+            print("No buffer status response received.")
+            return
+
+        if value <= 2:
+            mode_name = {
+                0: "stopped",
+                1: "realtime",
+                2: "buffered",
+            }.get(value, f"unknown({value})")
+
+            print("Buffer status:")
+            print(f"  mode: {mode_name}")
+            print("  capacity: unavailable (legacy firmware status format)")
+            print("  count: unavailable (legacy firmware status format)")
+            print("  full/wrapped: unavailable (legacy firmware status format)")
+            print("  dump active: unavailable (legacy firmware status format)")
+            print("  note: rebuild/flash firmware with packed buffer status support for full details.")
+            return
+
+        mode = (value >> 28) & 0x0F
+        full = bool((value >> 27) & 0x01)
+        dumping = bool((value >> 26) & 0x01)
+        capacity = (value >> 12) & 0x0FFF
+        count = value & 0x0FFF
+        mode_name = {
+            0: "stopped",
+            1: "realtime",
+            2: "buffered",
+        }.get(mode, f"unknown({mode})")
+
+        print("Buffer status:")
+        print(f"  mode: {mode_name}")
+        print(f"  capacity: {capacity}")
+        print(f"  count: {count}")
+        print(f"  full/wrapped: {'yes' if full else 'no'}")
+        print(f"  dump active: {'yes' if dumping else 'no'}")
+
     def do_readings(self, arg):
-        """Display current sensor readings"""
-        if self.send_command(self.CMD_GET_READINGS):
-            print("Reading request sent to sensor module")
-            print("Current sensor readings:")
+        """Display latest locally observed realtime readings."""
+        print("Latest locally observed readings:")
 
-            with self.data_lock:
-                snapshot = dict(self.sensor_data)
+        with self.data_lock:
+            snapshot = dict(self.sensor_data)
 
-            for sensor, value in snapshot.items():
-                print(f"{sensor}: {value if value is not None else 'No data'}")
-        else:
-            print("Failed to send reading request command")
+        for sensor, value in snapshot.items():
+            print(f"{sensor}: {value if value is not None else 'No data'}")
 
     def do_dump_buffer(self, arg):
         """Dump buffered sample data from the module (requires stop streaming)."""
@@ -706,6 +779,8 @@ Additional commands:
         samples = []
         record_count = None
         samples_received = 0
+        sequence_errors = 0
+        legacy_sequence_format = False
         start_time = datetime.datetime.now()
         timeout = 30  # seconds (stored-data playback can take longer on some modules)
 
@@ -752,18 +827,32 @@ Additional commands:
                 print("-- now listening for buffered payload frames --")
                 saw_any_data = True
 
-            # Buffered playback frames are currently tagged CMD_READ_FLASH by firmware.
-            if cmd_id != self.CMD_READ_FLASH:
+            # Buffered playback frames are tagged CMD_BUFFERED_SAMPLE_DATA.
+            if cmd_id != self.CMD_BUFFERED_SAMPLE_DATA:
                 continue
 
             # Collect up to record_count samples (don't treat value==0 as terminator)
             if samples_received < record_count:
+                seq = (msg.data[1] << 8) | msg.data[2]
+                expected_seq = samples_received & 0xFFFF
+
+                if samples_received == 0 and seq == self.CAN_ID:
+                    legacy_sequence_format = True
+                    print("Legacy buffered payload format detected; sequence check unavailable.")
+
+                if legacy_sequence_format:
+                    seq = expected_seq
+                elif seq != expected_seq:
+                    sequence_errors += 1
+                    if sequence_errors <= 5:
+                        print(f"Sequence warning: expected {expected_seq}, received {seq}")
+
                 if samples_received < payload_debug_limit:
-                    print(f"RECV ID=0x{msg.arbitration_id:03X} cmd=0x{cmd_id:02X} data={msg.data.hex()}")
+                    print(f"RECV ID=0x{msg.arbitration_id:03X} seq={seq} cmd=0x{cmd_id:02X} data={msg.data.hex()}")
 
                 p1 = (value >> 16) & 0xFFFF
                 p2 = value & 0xFFFF
-                samples.append((p1, p2))
+                samples.append((seq, p1, p2))
                 samples_received += 1
 
                 if samples_received >= next_progress_report and samples_received < record_count:
@@ -787,14 +876,21 @@ Additional commands:
         else:
             print(f"Received all {samples_received} buffered samples.")
 
+        if sequence_errors:
+            print(f"Warning: detected {sequence_errors} buffered sample sequence issue(s).")
+        elif legacy_sequence_format:
+            print("Buffered sample sequence check skipped for legacy firmware payload format.")
+        elif samples:
+            print("Buffered sample sequence check passed.")
+
         if samples:
             out_path = self._make_output_path()
             with open(out_path, mode='w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Timestamp', 'Pressure1', 'Pressure2'])
+                writer.writerow(['Timestamp', 'SampleIndex', 'Pressure1', 'Pressure2'])
                 now = datetime.datetime.now()
-                for i, (p1, p2) in enumerate(samples):
-                    writer.writerow([now.isoformat(timespec="milliseconds"), p1, p2])
+                for i, (seq, p1, p2) in enumerate(samples):
+                    writer.writerow([now.isoformat(timespec="milliseconds"), seq, p1, p2])
             print(f"Saved {len(samples)} samples to {out_path.resolve()}")
         else:
             print("No stored samples received (timeout or empty record)")

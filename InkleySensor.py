@@ -49,6 +49,15 @@ CAN_CHANNEL = 'COM5'
 # NEW: the CAN ID PC/listener will receive ACK responses on
 PC_RESP_ID = 0x108
 
+# Must match firmware SYSTICK_TIMING. These are estimated host timestamps,
+# not acquisition timestamps; USB buffering can still cause overlaps/jitter.
+SAMPLE_PERIOD = datetime.timedelta(milliseconds=1)
+
+
+def packed_sample_timestamps(received_at):
+    """Anchor sample B to host receipt and sample A one ADC tick earlier."""
+    return (received_at - SAMPLE_PERIOD, received_at)
+
 def detect_os():
     """Detect the current operating system"""
     system = platform.system().lower()
@@ -223,6 +232,8 @@ Additional commands:
   buffer_status    - Show firmware RAM buffer status
   dump_buffer      - Download buffered sample data and save to CSV
   read_flash       - Backward-compatible alias for dump_buffer
+  clear            - Clear the terminal window
+  home             - Show this menu
 """
     prompt = "> "
     
@@ -349,6 +360,16 @@ Additional commands:
             print(f"Error sending command {hex(command_id)}: {e}")
             return False
 
+    def _recv_frame(self, timeout):
+        """Receive with the caller holding bus_lock; discard malformed SLCAN input."""
+        try:
+            return self.bus.recv(timeout=timeout)
+        except (ValueError, IndexError) as exc:
+            # python-can's SLCAN parser can reject startup/partial serial lines.
+            # Keep request deadlines intact and make potential data loss visible.
+            print(f"Warning: discarded malformed CAN input (possible data loss): {exc}")
+            return None
+
     def _drain_pending_can_messages(self, max_messages=100):
         """Discard already-queued CAN frames before starting a request/response flow."""
         if self.bus is None:
@@ -357,7 +378,7 @@ Additional commands:
         drained = 0
         with self.bus_lock:
             while drained < max_messages:
-                msg = self.bus.recv(timeout=0)
+                msg = self._recv_frame(timeout=0)
                 if msg is None:
                     break
                 drained += 1
@@ -433,7 +454,7 @@ Additional commands:
                 while self.streaming:
                     # Wake up at least every 0.1s even if no CAN messages arrive
                     with self.bus_lock:
-                        msg = self.bus.recv(timeout=0.1)
+                        msg = self._recv_frame(timeout=0.1)
                     current_time = datetime.datetime.now()
 
                     handled = False
@@ -510,9 +531,9 @@ Additional commands:
                                         self.sensor_data['Pressure2'] = p2_b
                                         self.sensor_time['Pressure2'] = current_time
 
-                                    # Buffer both samples (assume 0.5ms spacing between samples)
-                                    buffered_rows.append([current_time.isoformat(timespec="milliseconds"), p1_a, p2_a])
-                                    buffered_rows.append([(current_time + datetime.timedelta(microseconds=500)).isoformat(timespec="milliseconds"), p1_b, p2_b])
+                                    time_a, time_b = packed_sample_timestamps(current_time)
+                                    buffered_rows.append([time_a.isoformat(timespec="microseconds"), p1_a, p2_a])
+                                    buffered_rows.append([time_b.isoformat(timespec="microseconds"), p1_b, p2_b])
                                     sample_counter += 2
 
                                 # Flush every flush_every samples (reduce per-sample I/O overhead)
@@ -590,7 +611,7 @@ Additional commands:
 
                 while (datetime.datetime.now() - start_time).total_seconds() < timeout:
                     with self.bus_lock:
-                        msg = self.bus.recv(1)
+                        msg = self._recv_frame(1)
 
                     if msg and msg.arbitration_id == PC_RESP_ID and len(msg.data) == 8:
                         cmd_id = msg.data[3]
@@ -651,6 +672,16 @@ Additional commands:
     def do_exit(self, arg):
         """Alias for quit command"""
         return self.do_quit(arg)
+
+    def do_clear(self, arg):
+        """Clear the terminal window"""
+        command = "cls" if os.name == "nt" else "clear"
+        os.system(command)
+        print()
+
+    def do_home(self, arg):
+        """Display the Inkley Sensor CLI menu"""
+        print(self.intro)
         
     def do_set_buffer_size(self, arg):
         """Set the RAM buffer size used while streaming (command 6)."""
@@ -691,7 +722,7 @@ Additional commands:
         start_time = datetime.datetime.now()
         while (datetime.datetime.now() - start_time).total_seconds() < timeout:
             with self.bus_lock:
-                msg = self.bus.recv(1)
+                msg = self._recv_frame(1)
 
             if msg and msg.arbitration_id == PC_RESP_ID and len(msg.data) == 8:
                 cmd_id = msg.data[3]
@@ -790,7 +821,7 @@ Additional commands:
         next_progress_report = 1000
         while (datetime.datetime.now() - start_time).total_seconds() < timeout:
             with self.bus_lock:
-                msg = self.bus.recv(1)
+                msg = self._recv_frame(1)
             if not msg or len(msg.data) != 8:
                 continue
 

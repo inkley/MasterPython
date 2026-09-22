@@ -124,13 +124,44 @@ Run these after the smoke test passes:
 
 ## Next Hardware Storage Steps
 
+RAM buffering is the right first-stage architecture for deterministic sampling
+and CAN retrieval validation. For longer-duration local logging, the current
+TM4C internal RAM is capacity-limited to seconds, so the next hardware step
+should be external FRAM or flash, with FRAM preferred for high-endurance
+time-series logging.
+
+Current RAM storage math:
+
+- Buffered sample format: one `Pressure1`/`Pressure2` pair per `uint32_t`.
+- Storage rate at 1000 Hz: `4 bytes/sample * 1000 samples/s = 4 KB/s`.
+- Current tested capacity: `4094 samples`.
+- Current tested duration: `4094 / 1000 Hz = 4.094 seconds`.
+
+Longer-duration storage estimates at the current 4-byte sample-pair format:
+
+```text
+30 sec  -> 120 KB
+60 sec  -> 240 KB
+5 min   -> 1.2 MB
+10 min  -> 2.4 MB
+```
+
 Use this order when expanding storage:
 
-1. RAM buffer only.
-2. EEPROM or FRAM for configuration/calibration records.
-3. Soldered SPI FRAM for high-endurance backup logging.
+1. RAM buffer only for recent samples, debugging, smoke tests, short bursts,
+   and CAN dump validation.
+2. MCU EEPROM only for persistent configuration/calibration data such as
+   settings, calibration constants, or device ID. The available EEPROM is too
+   small for high-rate sampled data.
+3. Soldered SPI FRAM for high-endurance backup logging. FRAM avoids
+   erase-before-write behavior, supports simple circular log semantics, and is
+   more predictable for repeated sampling.
 4. Soldered SPI flash only if capacity matters more than write endurance and
    erase-block management complexity.
+
+Avoid internal flash for normal high-rate sample logging. Internal flash has
+erase-block constraints, slower writes, and endurance limits; it is better used
+for firmware storage than repeated time-series logging.
 
 Avoid removable SD for this workflow unless field-service data removal becomes a
 hard requirement.

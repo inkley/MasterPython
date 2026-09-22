@@ -4,6 +4,9 @@ Python command-line tools for communicating with Inkley pressure sensor modules
 over CAN bus. The CLI is used for lab testing, firmware validation, real-time
 CSV logging, and RAM-buffer dump retrieval.
 
+For the September 22 restart, environment setup, bench findings, and Python
+analysis commands, see [REENTRY_GUIDE.md](REENTRY_GUIDE.md).
+
 ## Features
 
 - Query firmware version over CAN.

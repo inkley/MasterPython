@@ -19,7 +19,7 @@ repository; simply adding an ignore rule will not untrack them.
 
 ## Data path refresher
 
-1. TM4C123GE6PM samples PE3/AIN0 and PE2/AIN1 every nominal 1 ms.
+1. TM4C123GH6PM samples PE3/AIN0 and PE2/AIN1 every nominal 1 ms.
 2. During streaming, each two-channel sample enters a circular RAM buffer.
 3. With `STREAM_DECIMATE=2`, two consecutive sample pairs share one CAN frame:
    nominally 1,000 sample pairs/s and 500 broadcast frames/s.
@@ -83,9 +83,11 @@ dependency versions installed for this session (Windows, Python 3.13.5).
 - Import realtime or sequence-tagged buffer CSV, retaining raw ADC counts.
 - Convert counts to volts using `counts * Vref / 4095` (default Vref 3.3 V).
 - Optionally apply `P = (V-b)/m` using separate P1/P2 calibration coefficients.
-- Calculate P1 minus P2; optionally filter with an eighth-order Butterworth
-  low-pass and forward/backward filtering (default 50 Hz).
-- Export processed CSV, NPZ, MAT, metadata JSON, and a three-panel PNG to a new
+- Treat P1 and P2 independently: each already measures differential pressure
+  across its respective ports. No P1 minus P2 signal is calculated or exported.
+- Optionally filter each channel with an eighth-order Butterworth low-pass and
+  forward/backward filtering (default 150 Hz; adjustable with `--lowpass`).
+- Export processed CSV, NPZ, MAT, metadata JSON, and a two-panel PNG to a new
   timestamped `Data/Results/` folder. Existing results are not overwritten.
 
 ```powershell
@@ -125,8 +127,22 @@ to the dump, so do not equate it to a realtime row index without alignment.
 
 ## Firmware next steps
 
+The firmware repository's `TIMING_AND_STORAGE.md` incorporates the September 22
+timing and flash-logging notes, with PCB RTC recommendations. Key corrections:
+the current clock configuration implies 20 MHz; GlobalTimer skips increments
+on ISR early returns; samples do not carry MCU timestamps; and the current
+old GE6PM linker exposed only 128 KiB flash. The user confirmed both the bench MCU
+and PCB MCU are TM4C123GH6PM, with 256 KiB flash and 32 KiB SRAM. The CCS Debug
+and Release settings now target GH6PM, with 128 KiB application flash and 128 KiB
+reserved for logging. Both builds and executable layout checks passed; see
+`GH6PM_BUILD_VALIDATION.md` in the firmware repository. No new image was flashed.
+Treat
+internal-flash logging as a staged feasibility experiment, retaining RAM for
+acquisition and measuring flash-induced timing interference.
+
 The installed TI ARM 20.2.7.LTS compiler compiled current main.c successfully.
-This session did not link the full CCS project or flash the MCU.
+Subsequent isolated full Debug/Release project builds also passed; the MCU has
+not been flashed with those new images.
 Use CCS to build and flash when firmware changes are ready, then record build
 ID, source commit, and bench results together.
 

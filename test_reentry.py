@@ -52,7 +52,7 @@ class ReentryTests(unittest.TestCase):
         self.assertEqual(timestamps, ['same', 'same'])
         np.testing.assert_allclose(result['t'], [0, .001])
         np.testing.assert_allclose(result['p1'], [-.05, 1.6])
-        np.testing.assert_allclose(result['dp'], [-3.35, 1.6])
+        np.testing.assert_allclose(result['p2'], [3.3, 0])
 
     def test_filter_rejects_gaps_and_short_records(self):
         with self.assertRaisesRegex(ValueError, 'missing sample'):
@@ -62,11 +62,16 @@ class ReentryTests(unittest.TestCase):
 
     def test_lowpass_preserves_dc_and_attenuates_high_frequency(self):
         index = np.arange(4000)
-        signal = 2000 + 100*np.sin(2*np.pi*200*index/1000)
-        result = process(np.column_stack((signal, signal)), index)
+        signal = 2000 + 100*np.sin(2*np.pi*300*index/1000)
+        passband = 2000 + 100*np.sin(2*np.pi*100*index/1000)
+        result = process(np.column_stack((signal, passband)), index)
         filtered = result['p1_f'][200:-200]
         self.assertLess(np.std(filtered), .001)
         self.assertAlmostEqual(np.mean(filtered), 2000*3.3/4095, places=5)
+        # A 100 Hz signal should be retained by the 150 Hz default, independently
+        # of the rejected 300 Hz signal on the other channel.
+        np.testing.assert_allclose(result['p2_f'][200:-200],
+                                   result['p2'][200:-200], atol=.001)
 
 
 if __name__ == '__main__':

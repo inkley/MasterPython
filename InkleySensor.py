@@ -4,7 +4,7 @@ Author: Tyler Inkley
 Inkley_SensorCommander (Python CLI)
 - Command-line interface for interacting with the Inkley/Tiva pressure sensor module over CAN (SLCAN/CANable).
 - Supports:
-    * Query firmware version (ACK via PC_RESP_ID)
+    * Query firmware versiclon (ACK via PC_RESP_ID)
     * Start/stop real-time streaming
     * Dump buffered samples from the module
     * Request current readings (command-based)

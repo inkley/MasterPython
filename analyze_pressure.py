@@ -1,4 +1,4 @@
-"""Python quick-look equivalent of IPS_TI_Raw_v19.m, with buffer CSV support."""
+"""Quick-look analysis of the independent P1 and P2 differential-pressure channels."""
 
 import argparse
 import csv
@@ -32,7 +32,7 @@ def load_csv(path):
     return adc, index, [r['Timestamp'] for r in rows], has_index
 
 
-def process(adc, index, fs=1000.0, vref=3.3, cutoff=50.0, calibration=None):
+def process(adc, index, fs=1000.0, vref=3.3, cutoff=150.0, calibration=None):
     """Use nominal sample time, not USB receipt/dump-write timestamps."""
     if not np.isfinite(fs) or fs <= 0 or not np.isfinite(vref) or vref <= 0:
         raise ValueError('Sample rate and reference voltage must be positive and finite')
@@ -45,7 +45,8 @@ def process(adc, index, fs=1000.0, vref=3.3, cutoff=50.0, calibration=None):
             if not np.isfinite(slope) or slope == 0 or not np.isfinite(offset):
                 raise ValueError('Calibration requires finite nonzero m and finite b for each channel')
             pressure[:, channel] = (voltage[:, channel] - offset) / slope
-    signals = np.column_stack((pressure, pressure[:, 0] - pressure[:, 1]))
+    # Each channel already measures a pressure difference across its own ports.
+    signals = pressure
     filtered = signals.copy()
     if cutoff is not None:
         if not np.isfinite(cutoff) or not 0 < cutoff < fs / 2:
@@ -59,8 +60,8 @@ def process(adc, index, fs=1000.0, vref=3.3, cutoff=50.0, calibration=None):
             raise ValueError('Record is too short for the filter; use --no-filter') from exc
     return dict(t=(index-index[0])/fs, adc1=adc[:, 0], adc2=adc[:, 1],
                 v1=voltage[:, 0], v2=voltage[:, 1], p1=signals[:, 0],
-                p2=signals[:, 1], dp=signals[:, 2], p1_f=filtered[:, 0],
-                p2_f=filtered[:, 1], dp_f=filtered[:, 2], sample_index=index)
+                p2=signals[:, 1], p1_f=filtered[:, 0],
+                p2_f=filtered[:, 1], sample_index=index)
 
 
 def main():
@@ -68,7 +69,7 @@ def main():
     parser.add_argument('csv', type=Path)
     parser.add_argument('--fs', type=float, default=1000, help='Nominal ADC rate in Hz; match firmware')
     parser.add_argument('--vref', type=float, default=3.3)
-    parser.add_argument('--lowpass', type=float, default=50)
+    parser.add_argument('--lowpass', type=float, default=150, help='Low-pass cutoff in Hz (default: 150)')
     parser.add_argument('--no-filter', action='store_true')
     parser.add_argument('--calibration', type=Path, help='JSON with P1/P2: {m: volts/Pa, b: volts}')
     parser.add_argument('--outdir', type=Path, help='New directory; must not already exist')
@@ -103,8 +104,8 @@ def main():
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True, constrained_layout=True)
-    for axis, key, label in zip(axes, ('p1', 'p2', 'dp'), ('P1', 'P2', 'P1 - P2')):
+    fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True, constrained_layout=True)
+    for axis, key, label in zip(axes, ('p1', 'p2'), ('P1', 'P2')):
         axis.plot(result['t'], result[key], linewidth=0.7, alpha=0.6, label='Raw')
         if not args.no_filter:
             axis.plot(result['t'], result[key+'_f'], linewidth=1, label=f'{args.lowpass:g} Hz low-pass')

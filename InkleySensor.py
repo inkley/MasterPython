@@ -41,6 +41,9 @@ import threading
 import platform
 import serial.tools.list_ports
 import os
+import time
+import uuid
+from flash_protocol import manifest_info, validate_recording
 from pathlib import Path
 
 # Global configuration
@@ -232,6 +235,12 @@ Additional commands:
   buffer_status    - Show firmware RAM buffer status
   dump_buffer      - Download buffered sample data and save to CSV
   read_flash       - Backward-compatible alias for dump_buffer
+  flash_capture    - Bounded RAM capture (e.g. flash_capture 1000)
+  flash_stop       - Stop bounded capture early
+  flash_status     - Read persistence state
+  persist_buffer   - Save stopped bounded capture to blank flash
+  verify_flash     - Verify actual flash recording
+  dump_flash       - Download/verify actual flash, preserving it
   clear            - Clear the terminal window
   home             - Show this menu
 """
@@ -631,17 +640,18 @@ Additional commands:
         self.expected_response_cmd = None
 
     def do_start(self, arg):
-        """Start real-time sensor streaming"""
-        if not self.streaming:
-            if self.send_command(self.CMD_START_STREAM):
-                self.streaming = True
-                self.stream_thread = threading.Thread(target=self.stream_data, daemon=True)
-                self.stream_thread.start()
-                print("Started real-time streaming")
-            else:
-                print("Failed to send start streaming command")
-        else:
+        """Start legacy realtime streaming after module acknowledgement."""
+        if self.streaming:
             print("Streaming is already active")
+            return
+        result = self._recv_u32_response(self.CMD_START_STREAM)
+        if result != 1:
+            print(f"Start rejected or outcome unknown: {result}. Check flash_status/version.")
+            return
+        self.streaming = True
+        self.stream_thread = threading.Thread(target=self.stream_data, daemon=True)
+        self.stream_thread.start()
+        print("Started real-time streaming")
 
     def do_stop(self, arg):
         """Stop streaming"""
@@ -695,18 +705,21 @@ Additional commands:
             print("Buffer size must be positive")
             return
 
-        if self.send_command(self.CMD_STREAM_BUFFER_SET, size):
-            print(f"Requested buffer size set to {size} (module may cap it)")
+        value = self._recv_u32_response(self.CMD_STREAM_BUFFER_SET, value_u32=size)
+        if value is None:
+            print("Buffer size response unavailable; outcome unknown")
+        elif value & 0x80000000:
+            print("Buffer size change rejected; retained recording unchanged")
         else:
-            print("Failed to send buffer size command")
+            print(f"Firmware RAM buffer capacity set to {value}")
 
-    def _recv_u32_response(self, command_id, timeout=5):
+    def _recv_u32_response(self, command_id, timeout=5, value_u32=None):
         """Send a command and return its uint32 response value."""
         self.response_event.clear()
         self.expected_response_cmd = command_id
         self.response_data = None
 
-        if not self.send_command(command_id):
+        if not self.send_command(command_id, value_u32):
             self.expected_response_cmd = None
             return None
 
@@ -732,6 +745,121 @@ Additional commands:
 
         self.expected_response_cmd = None
         return None
+
+    def _flash_ready(self):
+        if self.streaming:
+            print("Stop legacy streaming first.")
+            return False
+        if not self.initialize_can_bus():
+            return False
+        self._drain_pending_can_messages()
+        if self._recv_u32_response(0x0f) != 0x49500101:
+            print("Stage-one flash capability unavailable; firmware 0.0.3.238 required.")
+            return False
+        return True
+
+    def _flash_result(self, result):
+        errors = {1: 'busy', 2: 'invalid state', 3: 'invalid capture size',
+                  4: 'missing UUID', 5: 'storage is nonblank/protected',
+                  6: 'flash operation failed', 7: 'readback/CRC verification failed'}
+        if result is None:
+            print("No response: outcome UNKNOWN. Query flash_status; do not retry destructively.")
+            return False
+        if result & 0x80000000:
+            print(f"Module rejected/failed: {errors.get(result & 0x7fffffff, hex(result))}")
+            return False
+        return True
+
+    def do_flash_capture(self, arg):
+        """flash_capture <pairs>: new bounded RAM capture, no flash writes yet."""
+        try:
+            limit = int(arg.strip())
+            if not 1 <= limit <= 4094: raise ValueError()
+        except ValueError:
+            print("Usage: flash_capture <1..4094> (actual configured capacity may be lower)")
+            return
+        if not self._flash_ready(): return
+        recording = uuid.uuid4()
+        for i in range(4):
+            value = int.from_bytes(recording.bytes[i*4:i*4+4], 'big')
+            if not self._flash_result(self._recv_u32_response(0x10+i, value_u32=value)): return
+        result = self._recv_u32_response(0x14, value_u32=limit)
+        if self._flash_result(result):
+            print(f"Capture accepted: {recording}, limit={result} pairs. Auto-stops at limit.")
+            print("No realtime CSV is created. Use flash_status, then persist_buffer.")
+
+    def do_flash_stop(self, arg):
+        """Stop bounded capture early, preserving its RAM samples."""
+        if not self._flash_ready(): return
+        if self._flash_result(self._recv_u32_response(self.CMD_STOP_STREAM)):
+            print("Acquisition stopped; RAM preserved. Check flash_status.")
+
+    def do_flash_status(self, arg):
+        """Read stage-one state and current RAM sample count; never modifies storage."""
+        if not self._flash_ready(): return
+        result = self._recv_u32_response(0x16)
+        if self._flash_result(result):
+            states = {0:'EMPTY',1:'CAPTURING',2:'RAM_READY',3:'COMMITTED',4:'FAULT',5:'OCCUPIED (reboot/nonblank media)'}
+            print(f"Flash state: {states.get(result >> 24, 'UNKNOWN')}; RAM pairs={result & 0xffffff}")
+
+    def do_persist_buffer(self, arg):
+        """Persist stopped bounded capture to blank reserved flash; no overwrite/clear."""
+        if not self._flash_ready(): return
+        print("Persisting and verifying. Acquisition is stopped; CAN may pause. Waiting up to 90 s...")
+        result = self._recv_u32_response(0x15, timeout=90)
+        if self._flash_result(result): print(f"Committed and readback verified: {result} pairs.")
+
+    def do_verify_flash(self, arg):
+        """Read-only MCU verification of stage-one manifest/data CRCs."""
+        if not self._flash_ready(): return
+        result = self._recv_u32_response(0x17, timeout=15)
+        if self._flash_result(result): print(f"Flash CRC/readback verification passed: {result} pairs.")
+
+    def _flash_read_block(self, block_index):
+        self._drain_pending_can_messages()
+        count = self._recv_u32_response(0x18, value_u32=block_index)
+        if count != 256: raise ValueError(f"Block read rejected/unknown: {count}")
+        data = bytearray()
+        deadline = time.monotonic()+15
+        while len(data)<1024 and time.monotonic()<deadline:
+            with self.bus_lock:
+                msg = self._recv_frame(0.5)
+            if msg is None or msg.arbitration_id != PC_RESP_ID or len(msg.data)!=8 or msg.data[3]!=0x1a:
+                continue
+            seq = (msg.data[1]<<8)|msg.data[2]
+            if seq != len(data)//4: raise ValueError("Dropped/reordered flash transfer frame; retry dump")
+            data.extend(msg.data[4:8])
+        if len(data)!=1024: raise ValueError("Flash block transfer timed out; recording unchanged")
+        return bytes(data)
+
+    def do_dump_flash(self, arg):
+        """dump_flash [stem]: verify/download actual flash to unique binary + nominal CSV files."""
+        if not self._flash_ready(): return
+        stem = arg.strip() or 'flash_recording'
+        if Path(stem).name != stem or stem in ('.','..'):
+            print("Use a filename stem without directories")
+            return
+        try:
+            manifest = self._flash_read_block(2)
+            count, blocks, _ = manifest_info(manifest)
+            data = [self._flash_read_block(9+i) for i in range(blocks)]
+            samples = validate_recording(manifest, data)
+            directory = self.output_dir / (stem+'_'+datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+            directory.mkdir(parents=True, exist_ok=False)
+            image = bytearray(b'\xff'*131072)
+            image[2048:3072] = manifest
+            for i, block in enumerate(data): image[(9+i)*1024:(10+i)*1024] = block
+            (directory/'recording.bin').write_bytes(image)
+            with (directory/'samples.csv').open('x', newline='') as handle:
+                writer = csv.writer(handle)
+                writer.writerow(['Timestamp','SampleIndex','Pressure1','Pressure2','SessionId','NominalTimeUs','TimeBasis'])
+                for index,p1,p2 in samples:
+                    writer.writerow(['',index,p1,p2,str(uuid.UUID(bytes=manifest[8:24])),index*1000,'NOMINAL_ONLY_TIME_UNCERTAIN'])
+            print(f"Verified {count} flash pairs; saved to {directory.resolve()}")
+            print("Binary is a reconstructed partition: untransferred areas filled FF, not a full physical dump.")
+            print("No acknowledgement or deletion sent. CSV time is nominal, not measured acquisition time.")
+        except (ValueError, OSError) as exc:
+            print(f"Flash dump failed: {exc}. Module recording retained.")
 
     def do_buffer_status(self, arg):
         """Show firmware RAM buffer status."""
@@ -840,6 +968,9 @@ Additional commands:
             # First response should be the buffered-stream reply: command=CMD_STREAM_BUFFER
             # and value = number of stored records (may be 0).
             if cmd_id == self.CMD_STREAM_BUFFER:
+                if value & 0x80000000:
+                    print("RAM dump rejected by module (busy or retained-state restriction).")
+                    return
                 record_count = value
                 print(f"Buffered record count: {record_count}")
                 if record_count == 0:

@@ -1,173 +1,80 @@
-# MasterPython - Inkley Sensor CAN Interface
+# MasterPython: Inkley pressure sensor tools
 
-Python command-line tools for communicating with Inkley pressure sensor modules
-over CAN bus. The CLI is used for lab testing, firmware validation, real-time
-CSV logging, and RAM-buffer dump retrieval.
+Host CLI, verified recording retrieval and quick-look analysis for two independent
+differential-pressure channels. Firmware companion: [PressureSensor](https://github.com/inkley/PressureSensor).
 
-For the September 22 restart, environment setup, bench findings, and Python
-analysis commands, see [REENTRY_GUIDE.md](REENTRY_GUIDE.md).
+- [Current validated state and open work](docs/CURRENT_STATUS.md)
+- [Repeatable acceptance procedure](docs/ACCEPTANCE_PROCEDURE.md)
+- [Specifications and historical evidence index](docs/README.md)
+- [Development quick start](REENTRY_GUIDE.md)
 
-## Features
+## Setup and launch
 
-- Query firmware version over CAN.
-- Start and stop real-time pressure streaming.
-- Log real-time samples to CSV.
-- Set the firmware RAM buffer size.
-- Dump RAM-buffered samples after streaming stops.
-- Scan for likely SLCAN-compatible USB CAN adapters.
-
-`read_flash` remains available as a compatibility alias, but current firmware
-validation should use `dump_buffer`.
-
-## Requirements
+Validated Windows setup uses a SLCAN/CANable adapter at 1Mbps, last tested on COM5.
+Only one process owns the port. Select your actual adapter port with scan_ports /
+set_channel. Install dependencies using the project's Python environment:
 
 ```powershell
-pip install python-can pyserial
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe InkleySensor.py
 ```
 
-Supported adapters include CANable, CANdo, CANtact, USB2CAN, PEAK, Kvaser, and
-STM32-based SLCAN devices.
+requirements-lock.txt records the previously captured environment; requirements.txt
+is the maintained dependency input. Firmware .241 is the validated baseline.
 
-## Quick Start
+Candidate .242 adds measured_capture, dump_measured and raw-tick-aware plots;
+[hardware acceptance is pending](docs/reference/MEASURED_IMPLEMENTATION.md).
+
+## Main CLI workflows
+
+| Commands | Purpose |
+|---|---|
+| version, scan_ports, set_channel, system_info | Identify firmware/interface |
+| start, stop, set_filename, set_outdir | Legacy realtime host CSV logging |
+| set_buffer_size, buffer_status, dump_buffer | RAM staging and ordered dump |
+| flash_capture N, flash_stop, flash_status | Bounded RAM capture; maximum 4094 pairs |
+| persist_buffer, verify_flash, dump_flash LABEL | Stopped flash persistence and verified download |
+| ack_flash PATH | Durably acknowledge verified host binary; keep MCU recording |
+| clear_flash PATH | Explicitly erase the matching ACKed recording |
+| flash_recovery | Read-only recovery classification |
+| timing_reset, timing_start idle/can, timing_stop, timing_status LABEL | Volatile timing diagnostics |
+
+Use `help COMMAND` for syntax. `read_flash` is a historical alias for RAM
+`dump_buffer`; actual persistent storage uses `dump_flash`. Existing committed
+recordings prevent a new capture until explicit reclaim. Follow the acceptance
+procedure rather than clearing data as part of startup. Bench scratch operations
+are described in archived firmware fault-test evidence, not a normal user workflow.
+
+CAN IDs: command 0x107, replies 0x108, broadcast 0x7DF. Normal realtime output packs
+two P1/P2 pairs per frame (~500 frames/s at nominal 1000 pairs/s). Pressure values
+are raw 12-bit ADC counts unless calibrated by analysis. Data is Git-ignored;
+source commits do not back up recordings. Fixed CSV names overwrite; flash dumps
+and analysis use new timestamped destinations.
+
+Measured mode has1024-pair capacity; legacy mode remains4094. measured_init
+assigns/queries a boot timer domain without resetting its clock or clearing data.
+
+## Analysis
 
 ```powershell
-python .\InkleySensor.py
+.\.venv\Scripts\python.exe analyze_pressure.py Data\YOUR_CAPTURE.csv
 ```
 
-Inside the CLI:
+Use --fs for nominal sample rate (default 1000 Hz), --no-filter or --lowpass for
+filtering, --calibration for independent P1/P2 coefficients, --outdir for results.
+Without calibration, counts convert to volts with default Vref 3.3 V. Outputs include
+processed CSV/NPZ/MAT, metadata and pressure PNG in Data/Results. P1 and P2 each
+measure differential pressure independently; no P1-minus-P2 result is implied.
+Host receipt times and nominal flash sample times are not measured MCU acquisition
+timestamps. Filters/plots cannot restore undetected sample loss. See current status
+before interpreting timing or claiming continuous logging.
 
-```text
-scan_ports
-set_channel COM5
-version
+## Offline checks
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest test_reentry test_flash_protocol test_flash_recovery test_flash_lifecycle test_timing_protocol test_flash_v2 test_measured_pipeline
 ```
 
-Use the COM port reported for your CAN adapter.
-
-## Common Commands
-
-- `version` - request the firmware build/version.
-- `start` - start real-time CAN broadcast logging.
-- `stop` - stop real-time streaming.
-- `set_filename <file.csv>` - set the CSV output filename under `Data/`.
-- `set_outdir <path>` - set the CSV output directory.
-- `set_buffer_size <samples>` - request a RAM buffer capacity.
-- `buffer_status` - show firmware mode, RAM capacity, count, wrap flag, and dump state.
-- `dump_buffer` - download stored RAM samples to CSV.
-- `read_flash` - alias for `dump_buffer`.
-
-Menu numbers are also supported:
-
-1. Display firmware version
-2. Start real-time streaming
-3. Stop streaming
-4. Dump buffered sensor data
-5. Show buffer status
-6. Scan and select CAN ports
-7. Show system information
-8. Exit
-
-## CAN Protocol Summary
-
-- Interface: SLCAN
-- Bitrate: 1 Mbps
-- Command CAN ID: `0x107`
-- PC response CAN ID: `0x108`
-- Realtime broadcast CAN ID: `0x7DF`
-- Frame size: 8 bytes
-- Realtime packed frame type: `0x06`
-- Buffered sample playback frame tag: `0x07`
-
-Realtime frames pack two pressure samples per CAN frame. Buffered dump frames
-return one stored `Pressure1`/`Pressure2` sample pair per response frame.
-Buffered sample frames carry a 16-bit sequence index in bytes `[1..2]`; the
-CLI checks this index during `dump_buffer` and writes it to the CSV as
-`SampleIndex`.
-
-## RAM Buffer Validation
-
-The firmware stores samples in MCU RAM while real-time streaming is active.
-After `stop`, use `dump_buffer` to retrieve the stored records.
-
-Empty-buffer test after power cycle:
-
-```text
-version
-buffer_status
-dump_buffer
-```
-
-Expected result:
-
-```text
-Buffered record count: 0
-No buffered records present on the module.
-```
-
-Circular-buffer wrap test:
-
-```text
-set_buffer_size 256
-buffer_status
-set_filename realtime_wrap.csv
-start
-```
-
-Wait 2-5 seconds, then:
-
-```text
-stop
-buffer_status
-set_filename buffer_wrap.csv
-dump_buffer
-```
-
-Expected result: `Buffered record count: 256`.
-
-Max-capacity guard test:
-
-```text
-set_buffer_size 999999
-buffer_status
-set_filename realtime_maxcap.csv
-start
-```
-
-Wait about 5 seconds, then:
-
-```text
-stop
-buffer_status
-set_filename buffer_maxcap.csv
-dump_buffer
-```
-
-Expected result: the firmware caps the request at `4094` samples and saves
-`Data/buffer_maxcap.csv`.
-
-## Project Structure
-
-```text
-MasterPython/
-|-- InkleySensor.py
-|-- BUFFER_DUMP_TEST_WORKFLOW.md
-|-- TEST_RESULTS.md
-|-- Data/
-|-- CHANGES.md
-`-- README.md
-```
-
-## Troubleshooting
-
-- If no ports are found, verify the USB CAN adapter connection and driver.
-- On Windows, set the adapter explicitly with `set_channel COMx`.
-- On Linux, ensure the user has serial permissions, for example:
-
-```bash
-sudo usermod -a -G dialout $USER
-```
-
-## Context
-
-Part of the Inkley Sensor Module development effort for distributed
-hydrodynamic sensing and CAN-enabled underwater instrumentation.
+Current baseline:76 host checks (including v2 codec and measured integration). Hardware acceptance is a separate procedure.
+Documentation organization changes do not modify firmware, host behavior or data.

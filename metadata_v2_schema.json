@@ -1,0 +1,552 @@
+{
+  "status": "IMPLEMENTED_CANDIDATE_242_HARDWARE_PENDING",
+  "version": 2,
+  "block_bytes": 1024,
+  "header_bytes": 96,
+  "crc_offset": 1016,
+  "commit_offset": 1020,
+  "ram_samples": 1024,
+  "ram_events": 32,
+  "layouts": {
+    "header": {
+      "bytes": 96,
+      "fields": [
+        {
+          "name": "magic",
+          "offset": 0,
+          "bytes": 4
+        },
+        {
+          "name": "version",
+          "offset": 4,
+          "bytes": 2
+        },
+        {
+          "name": "kind",
+          "offset": 6,
+          "bytes": 2
+        },
+        {
+          "name": "recording_id",
+          "offset": 8,
+          "bytes": 16
+        },
+        {
+          "name": "time_domain_id",
+          "offset": 24,
+          "bytes": 16
+        },
+        {
+          "name": "sequence",
+          "offset": 40,
+          "bytes": 4
+        },
+        {
+          "name": "record_count",
+          "offset": 44,
+          "bytes": 2
+        },
+        {
+          "name": "record_bytes",
+          "offset": 46,
+          "bytes": 2
+        },
+        {
+          "name": "first_sample_index",
+          "offset": 48,
+          "bytes": 8
+        },
+        {
+          "name": "first_trigger_ticks",
+          "offset": 56,
+          "bytes": 8
+        },
+        {
+          "name": "nominal_tick_hz",
+          "offset": 64,
+          "bytes": 4
+        },
+        {
+          "name": "nominal_period_us",
+          "offset": 68,
+          "bytes": 4
+        },
+        {
+          "name": "flags",
+          "offset": 72,
+          "bytes": 4
+        },
+        {
+          "name": "header_bytes",
+          "offset": 76,
+          "bytes": 2
+        },
+        {
+          "name": "reserved_zero_0",
+          "offset": 78,
+          "bytes": 2
+        },
+        {
+          "name": "payload_schema",
+          "offset": 80,
+          "bytes": 4
+        },
+        {
+          "name": "reserved_zero_1",
+          "offset": 84,
+          "bytes": 12
+        }
+      ]
+    },
+    "sample": {
+      "bytes": 16,
+      "fields": [
+        {
+          "name": "trigger_ticks",
+          "offset": 0,
+          "bytes": 8
+        },
+        {
+          "name": "attempt_index",
+          "offset": 8,
+          "bytes": 4
+        },
+        {
+          "name": "p1",
+          "offset": 12,
+          "bytes": 2
+        },
+        {
+          "name": "p2",
+          "offset": 14,
+          "bytes": 2
+        }
+      ]
+    },
+    "event": {
+      "bytes": 64,
+      "fields": [
+        {
+          "name": "event_sequence",
+          "offset": 0,
+          "bytes": 8
+        },
+        {
+          "name": "attempt_index",
+          "offset": 8,
+          "bytes": 8
+        },
+        {
+          "name": "previous_ticks",
+          "offset": 16,
+          "bytes": 8
+        },
+        {
+          "name": "current_ticks",
+          "offset": 24,
+          "bytes": 8
+        },
+        {
+          "name": "missing_pair_count",
+          "offset": 32,
+          "bytes": 8
+        },
+        {
+          "name": "related_sample_index",
+          "offset": 40,
+          "bytes": 8
+        },
+        {
+          "name": "reason_bits",
+          "offset": 48,
+          "bytes": 4
+        },
+        {
+          "name": "validity_bits",
+          "offset": 52,
+          "bytes": 4
+        },
+        {
+          "name": "detail_code",
+          "offset": 56,
+          "bytes": 4
+        },
+        {
+          "name": "reserved_zero",
+          "offset": 60,
+          "bytes": 4
+        }
+      ]
+    },
+    "metadata": {
+      "bytes": 256,
+      "fields": [
+        {
+          "name": "schema",
+          "offset": 0,
+          "bytes": 4
+        },
+        {
+          "name": "payload_bytes",
+          "offset": 4,
+          "bytes": 4
+        },
+        {
+          "name": "device_id",
+          "offset": 8,
+          "bytes": 16
+        },
+        {
+          "name": "device_id_known",
+          "offset": 24,
+          "bytes": 4
+        },
+        {
+          "name": "timestamp_reference",
+          "offset": 28,
+          "bytes": 4
+        },
+        {
+          "name": "tick_hz_numerator",
+          "offset": 32,
+          "bytes": 8
+        },
+        {
+          "name": "tick_hz_denominator",
+          "offset": 40,
+          "bytes": 8
+        },
+        {
+          "name": "nominal_period_ns",
+          "offset": 48,
+          "bytes": 8
+        },
+        {
+          "name": "timer_width",
+          "offset": 56,
+          "bytes": 4
+        },
+        {
+          "name": "timer_behavior_bits",
+          "offset": 60,
+          "bytes": 4
+        },
+        {
+          "name": "schedule_origin_ticks",
+          "offset": 64,
+          "bytes": 8
+        },
+        {
+          "name": "first_attempt_ticks",
+          "offset": 72,
+          "bytes": 8
+        },
+        {
+          "name": "capture_accepted_ticks",
+          "offset": 80,
+          "bytes": 8
+        },
+        {
+          "name": "reserved_zero_0",
+          "offset": 88,
+          "bytes": 8
+        },
+        {
+          "name": "proxy_latency_bound_ns",
+          "offset": 96,
+          "bytes": 8
+        },
+        {
+          "name": "drift_bound_ppb",
+          "offset": 104,
+          "bytes": 8
+        },
+        {
+          "name": "nominal_tick_resolution_ns",
+          "offset": 112,
+          "bytes": 4
+        },
+        {
+          "name": "validity_bits",
+          "offset": 116,
+          "bytes": 4
+        },
+        {
+          "name": "sample_limit",
+          "offset": 120,
+          "bytes": 4
+        },
+        {
+          "name": "event_limit",
+          "offset": 124,
+          "bytes": 4
+        },
+        {
+          "name": "utc_schema",
+          "offset": 128,
+          "bytes": 4
+        },
+        {
+          "name": "mapping_count",
+          "offset": 132,
+          "bytes": 4
+        },
+        {
+          "name": "rcc",
+          "offset": 136,
+          "bytes": 4
+        },
+        {
+          "name": "rcc2",
+          "offset": 140,
+          "bytes": 4
+        },
+        {
+          "name": "pllstat",
+          "offset": 144,
+          "bytes": 4
+        },
+        {
+          "name": "nominal_pair_hz",
+          "offset": 148,
+          "bytes": 4
+        },
+        {
+          "name": "feature_bits",
+          "offset": 152,
+          "bytes": 4
+        },
+        {
+          "name": "reserved_zero_1",
+          "offset": 156,
+          "bytes": 100
+        }
+      ]
+    },
+    "manifest": {
+      "bytes": 256,
+      "fields": [
+        {
+          "name": "schema",
+          "offset": 0,
+          "bytes": 4
+        },
+        {
+          "name": "payload_bytes",
+          "offset": 4,
+          "bytes": 4
+        },
+        {
+          "name": "samples",
+          "offset": 8,
+          "bytes": 8
+        },
+        {
+          "name": "attempts",
+          "offset": 16,
+          "bytes": 8
+        },
+        {
+          "name": "adc_timeouts",
+          "offset": 24,
+          "bytes": 8
+        },
+        {
+          "name": "adc_errors",
+          "offset": 32,
+          "bytes": 8
+        },
+        {
+          "name": "events_retained",
+          "offset": 40,
+          "bytes": 8
+        },
+        {
+          "name": "events_total",
+          "offset": 48,
+          "bytes": 8
+        },
+        {
+          "name": "events_lost",
+          "offset": 56,
+          "bytes": 8
+        },
+        {
+          "name": "estimated_missing_slots",
+          "offset": 64,
+          "bytes": 8
+        },
+        {
+          "name": "first_valid_ticks",
+          "offset": 72,
+          "bytes": 8
+        },
+        {
+          "name": "last_valid_ticks",
+          "offset": 80,
+          "bytes": 8
+        },
+        {
+          "name": "capture_stop_ticks",
+          "offset": 88,
+          "bytes": 8
+        },
+        {
+          "name": "first_attempt_ticks",
+          "offset": 96,
+          "bytes": 8
+        },
+        {
+          "name": "last_attempt_ticks",
+          "offset": 104,
+          "bytes": 8
+        },
+        {
+          "name": "capture_accepted_ticks",
+          "offset": 112,
+          "bytes": 8
+        },
+        {
+          "name": "data_blocks",
+          "offset": 120,
+          "bytes": 4
+        },
+        {
+          "name": "event_blocks",
+          "offset": 124,
+          "bytes": 4
+        },
+        {
+          "name": "metadata_blocks",
+          "offset": 128,
+          "bytes": 4
+        },
+        {
+          "name": "stream_crc32",
+          "offset": 132,
+          "bytes": 4
+        },
+        {
+          "name": "quality_bits",
+          "offset": 136,
+          "bytes": 4
+        },
+        {
+          "name": "stop_reason",
+          "offset": 140,
+          "bytes": 4
+        },
+        {
+          "name": "ram_rejected",
+          "offset": 144,
+          "bytes": 8
+        },
+        {
+          "name": "unpaired_tail",
+          "offset": 152,
+          "bytes": 8
+        },
+        {
+          "name": "tx_drops",
+          "offset": 160,
+          "bytes": 8
+        },
+        {
+          "name": "tx_failures",
+          "offset": 168,
+          "bytes": 8
+        },
+        {
+          "name": "event_reason_or",
+          "offset": 176,
+          "bytes": 4
+        },
+        {
+          "name": "counter_rule",
+          "offset": 180,
+          "bytes": 4
+        },
+        {
+          "name": "validity_bits",
+          "offset": 184,
+          "bytes": 8
+        },
+        {
+          "name": "reserved_zero",
+          "offset": 192,
+          "bytes": 64
+        }
+      ]
+    },
+    "journal": {
+      "bytes": 96,
+      "fields": [
+        {
+          "name": "recording_id",
+          "offset": 0,
+          "bytes": 16
+        },
+        {
+          "name": "manifest_crc32",
+          "offset": 16,
+          "bytes": 4
+        },
+        {
+          "name": "operation",
+          "offset": 20,
+          "bytes": 2
+        },
+        {
+          "name": "flags_zero",
+          "offset": 22,
+          "bytes": 2
+        },
+        {
+          "name": "generation",
+          "offset": 24,
+          "bytes": 8
+        },
+        {
+          "name": "request_id",
+          "offset": 32,
+          "bytes": 16
+        },
+        {
+          "name": "data_blocks",
+          "offset": 48,
+          "bytes": 4
+        },
+        {
+          "name": "samples",
+          "offset": 52,
+          "bytes": 4
+        },
+        {
+          "name": "metadata_blocks",
+          "offset": 56,
+          "bytes": 4
+        },
+        {
+          "name": "event_blocks",
+          "offset": 60,
+          "bytes": 4
+        },
+        {
+          "name": "owned_page_bitmap",
+          "offset": 64,
+          "bytes": 16
+        },
+        {
+          "name": "schema",
+          "offset": 80,
+          "bytes": 4
+        },
+        {
+          "name": "reserved_zero",
+          "offset": 84,
+          "bytes": 12
+        }
+      ]
+    }
+  }
+}

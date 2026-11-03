@@ -6,6 +6,8 @@ import datetime as dt
 import json
 from pathlib import Path
 
+from measured_time import load_measured_time, break_plot
+
 import numpy as np
 from scipy.io import savemat
 from scipy.signal import butter, sosfiltfilt
@@ -76,9 +78,21 @@ def main():
     args = parser.parse_args()
     try:
         adc, index, timestamps, has_index = load_csv(args.csv)
+        measured = load_measured_time(args.csv,index)
         calibration = json.loads(args.calibration.read_text()) if args.calibration else None
-        result = process(adc, index, args.fs, args.vref,
-                         None if args.no_filter else args.lowpass, calibration)
+        effective_cutoff=None if args.no_filter else args.lowpass
+        filter_note=None
+        if measured is not None:
+            if args.fs!=1000: raise ValueError('Measured profile is nominal 1000 Hz; do not relabel with --fs')
+            if not measured['uniform'] or measured['gap'].any() or any(measured['quality']):
+                effective_cutoff=None
+                filter_note='Filtering disabled: measured times are irregular, gapped or quality-degraded; no implicit resampling.'
+        result = process(adc,index,args.fs,args.vref,effective_cutoff,calibration)
+        if measured is not None:
+            result['t']=measured['t']
+            result['trigger_ticks']=np.array(measured['ticks'],dtype=np.uint64)
+            result['attempt_index']=np.array(measured['attempts'],dtype=np.uint32)
+            result['gap_before']=measured['gap']
     except (ValueError, KeyError, TypeError, OSError) as exc:
         parser.error(str(exc))
 
@@ -87,12 +101,21 @@ def main():
     unit = 'Pa' if calibration is not None else 'V'
     metadata = dict(source=str(args.csv.resolve()), samples=len(adc), fs_nominal=args.fs,
                     vref=args.vref, adc_bits=12, unit=unit, calibration=calibration,
-                    lowpass_hz=None if args.no_filter else args.lowpass,
-                    filter_order=None if args.no_filter else 8,
+                    lowpass_hz=effective_cutoff,
+                    filter_order=None if effective_cutoff is None else 8,
                     time_basis='SampleIndex/fs (nominal)' if has_index else 'received row number/fs (nominal)',
                     has_sample_index=has_index, missing_indices=int(np.sum(np.diff(index)-1)),
                     timestamp_unique_count=len(set(timestamps)),
                     caveat='Host timestamps are not ADC acquisition times. Realtime losses cannot be detected without firmware sample counters.')
+    if measured is not None:
+        metadata.update(time_basis='RAW_TRIGGER_TICKS relative to first valid trigger',
+                        recording_id=measured['recording_id'],time_domain_id=measured['time_domain_id'],
+                        clock_hz=measured['clock_hz'],gap_boundaries=int(measured['gap'].sum()),
+                        event_details_available=measured['event_details_available'],
+                        annotated_events=len(measured['event_times']),
+                        utc=None,utc_error_bound_ns=None,quality_flags=measured['quality'],
+                        filter_note=filter_note,
+                        caveat='Measured pre-software-trigger proxy, MCU-clock-relative; ADC aperture and UTC are unknown.')
     (outdir / 'metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
     np.savez_compressed(outdir / 'processed.npz', **result, timestamp=np.array(timestamps), fs=args.fs)
     savemat(outdir / 'processed.mat', {**result, 'fs': args.fs, 'Vref': args.vref, 'adcBits': 12})
@@ -106,18 +129,31 @@ def main():
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True, constrained_layout=True)
     for axis, key, label in zip(axes, ('p1', 'p2'), ('P1', 'P2')):
-        axis.plot(result['t'], result[key], linewidth=0.7, alpha=0.6, label='Raw')
-        if not args.no_filter:
+        t,y=break_plot(result['t'],result[key],measured['gap']) if measured is not None else (result['t'],result[key])
+        axis.plot(t,y,linewidth=0.7,alpha=0.6,label='Raw')
+        if measured is not None:
+            gaps=np.flatnonzero(measured['gap'])
+            if len(gaps):
+                endpoints=np.unique(np.r_[gaps,np.maximum(0,gaps-1)])
+                axis.scatter(result['t'][endpoints],result[key][endpoints],s=8,color='C0',alpha=0.7)
+            boundaries=sorted(set(result['t'][measured['gap']].tolist()+measured['event_times']))
+            for j,boundary in enumerate(boundaries):
+                axis.axvline(boundary,color='crimson',alpha=0.4,linewidth=0.7,linestyle='--',label='Timing/gap event' if j==0 else None)
+        if effective_cutoff is not None:
             axis.plot(result['t'], result[key+'_f'], linewidth=1, label=f'{args.lowpass:g} Hz low-pass')
         axis.set_ylabel(f'{label} ({unit})')
         axis.grid(alpha=0.3)
         axis.legend(loc='upper right')
-    axes[-1].set_xlabel('Nominal time (s); ADC acquisition timestamps unavailable')
-    fig.suptitle(args.csv.name)
+    axes[-1].set_xlabel('Measured trigger elapsed time (s); UTC unavailable' if measured is not None else 'Nominal time (s); ADC acquisition timestamps unavailable')
+    prefix='OFFLINE fixture: ' if measured is not None and measured['origin']=='OFFLINE' else ''
+    if measured is not None and measured['origin']=='MCU_BENCH_RAM':prefix='BENCH gap injection: '
+    suffix=' — timing quality degraded' if measured is not None and any(measured['quality']) else ''
+    fig.suptitle(prefix+args.csv.name+suffix)
     fig.savefig(outdir / 'pressure.png', dpi=200)
     plt.close(fig)
     print(f'Processed {len(adc)} samples; units={unit}; nominal fs={args.fs:g} Hz')
     print(metadata['caveat'])
+    if filter_note: print(filter_note)
     print(f'Saved CSV, NPZ, MAT, metadata, and plot to {outdir.resolve()}')
 
 

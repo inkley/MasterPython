@@ -44,6 +44,8 @@ import os
 import time
 import uuid
 import json
+import zlib
+from measured_export import download_v2, export_v2
 from timing_protocol import WORD_COUNT, collect_words, decode_snapshot
 from flash_protocol import manifest_info, validate_recording, validate_block
 from flash_lifecycle import verified_file
@@ -238,6 +240,12 @@ Additional commands:
   buffer_status    - Show firmware RAM buffer status
   dump_buffer      - Download buffered sample data and save to CSV
   read_flash       - Backward-compatible alias for dump_buffer
+  measured_bench_gap - RAM-only 5 ms delay test using protected-record backup (.243+)
+  measured_bench_discard - Discard only matching exported bench RAM (.243+)
+  stack_status     - Read observed stack watermark (.243+)
+  measured_init    - Assign/query boot timer domain (.242+)
+  measured_capture - Capture 1..1024 timestamped pairs (.242+)
+  dump_measured    - Verify/export frozen measured RAM without deleting it
   timing_reset     - Reset stopped timing diagnostics (.241+)
   timing_start     - Start idle or can test without changing retained recordings
   timing_stop      - Stop diagnostic acquisition
@@ -843,6 +851,132 @@ Additional commands:
         except (ValueError, OSError) as exc:
             print(f"Timing report rejected/not saved: {exc}")
 
+    def _bench_ready(self):
+        if not self._measured_ready():return False
+        if self._recv_u32_response(0x30,value_u32=8)!=0x424e4301:
+            print('Bench/stack capability requires .243; no test started.');return False
+        return True
+
+    def do_stack_status(self, arg):
+        """Read boot-painted stack watermark while acquisition is stopped; not a worst-case proof."""
+        if not self._bench_ready():return
+        free=self._recv_u32_response(0x3e,value_u32=0x5354414b)
+        if not self._flash_result(free):return
+        if free>4032:print('Invalid stack report');return
+        print(f'Stack reservation=4096 bytes; pattern-unused={free}; estimated touched/unknown={4096-free}.')
+        print('Observed watermark only; unpainted/reserved frames and pattern collisions limit it. Not worst-case stack acceptance.')
+        if free<512:print('Insufficient/unknown painted margin: stop further stress testing and review.')
+
+    def _bench_stage(self, request, target):
+        raw=request.bytes+target.bytes
+        for i in range(8):
+            if not self._flash_result(self._recv_u32_response(0x20+i,value_u32=int.from_bytes(raw[4*i:4*i+4],'big'))):return False
+        return True
+
+    def do_measured_bench_gap(self, arg):
+        """measured_bench_gap <protected recording.bin>: fixed64-pair RAM test, 5ms SysTick delay, no flash writes."""
+        try:evidence=verified_file(arg.strip().strip('"'))
+        except (ValueError,OSError) as exc:print(f'No test started: {exc}');return
+        if evidence['format_version']!=2 or evidence.get('bench_injection'):print('This bench profile requires a protected normal v2 recording.');return
+        if not self._bench_ready():return
+        self._measured_domain_id=None;self.do_measured_init('')
+        if self._measured_domain_id is None:return
+        recording=uuid.uuid4()
+        if not self._bench_stage(recording,evidence['recording_id']):return
+        result=self._recv_u32_response(0x39,value_u32=evidence['manifest_crc'])
+        if self._flash_result(result) and result==64:
+            print(f'BENCH RAM capture {recording}:64 pairs, fixed5 ms service delay after attempt16.')
+            print('Protected flash retained. Wait1 s, then dump_measured bench_gap_01; persist_buffer is blocked for bench data.')
+
+    def do_measured_bench_discard(self, arg):
+        """measured_bench_discard <bench recording.bin>: verify saved bench evidence, discard only matching frozen RAM; flash retained."""
+        try:
+            path=Path(arg.strip().strip('"'));evidence=verified_file(path)
+            from flash_v2 import decode_recording
+            r=decode_recording(path.read_bytes())
+            if r['metadata']['schema']!=2 or r['metadata']['feature_bits']!=1:raise ValueError('Not a bench-gap recording')
+        except (ValueError,OSError) as exc:print(f'No discard sent: {exc}');return
+        if not self._bench_ready():return
+        if not self._bench_stage(uuid.uuid4(),evidence['recording_id']):return
+        result=self._recv_u32_response(0x3d,value_u32=evidence['manifest_crc'])
+        if self._flash_result(result) and result==0:print('Matching bench RAM discarded; protected flash reverified and retained.')
+
+    def _measured_ready(self):
+        if not self._flash_ready(): return False
+        if self._recv_u32_response(0x30,value_u32=0)!=0x49500201:
+            print("Measured capture unavailable; .242+ capability required. No capture started.")
+            return False
+        if self._recv_u32_response(0x30,value_u32=1)!=1024 or self._recv_u32_response(0x30,value_u32=2)!=32:
+            print("Unsupported measured capacities")
+            return False
+        return True
+
+    def _measured_domain(self):
+        assigned=self._recv_u32_response(0x30,value_u32=3)
+        if assigned==0: return None
+        if assigned!=1: raise ValueError('Unknown timer-domain state')
+        words=[self._recv_u32_response(0x30,value_u32=i) for i in range(4,8)]
+        if any(w is None for w in words) or self._recv_u32_response(0x30,value_u32=3)!=1:
+            raise ValueError('Timer domain changed or reply missing')
+        identity=uuid.UUID(bytes=b''.join(w.to_bytes(4,'big') for w in words))
+        if not identity.int: raise ValueError('Invalid timer domain')
+        return identity
+
+    def do_measured_init(self, arg):
+        """Query assigned boot timer domain, or assign a fresh UUID without resetting its timer."""
+        if not self._measured_ready(): return
+        try:
+            domain=self._measured_domain()
+            if domain is None:
+                domain=uuid.uuid4()
+                for i in range(4):
+                    word=int.from_bytes(domain.bytes[4*i:4*i+4],'big')
+                    if self._recv_u32_response(0x31+i,value_u32=word)!=word:
+                        raise ValueError('Domain staging failed; no capture started')
+                if self._recv_u32_response(0x35,value_u32=zlib.crc32(domain.bytes))!=1:
+                    raise ValueError('Domain commit rejected/unknown')
+                if self._measured_domain()!=domain: raise ValueError('Domain readback mismatch')
+            self._measured_domain_id=domain
+            print(f"Timer domain: {domain}; raw MCU ticks, UTC unavailable. Reconnect retains this ID; MCU reset requires a new ID.")
+        except ValueError as exc: print(f"Measured initialization failed: {exc}")
+
+    def do_measured_capture(self, arg):
+        """measured_capture <1..1024>: bounded timestamped RAM capture; never implicitly clears recordings."""
+        try: count=int(arg.strip())
+        except ValueError: count=0
+        if not 1<=count<=1024:
+            print("Usage: measured_capture <1..1024>");return
+        self._measured_domain_id=None
+        self.do_measured_init('')
+        if self._measured_domain_id is None: return
+        recording=uuid.uuid4()
+        for i in range(4):
+            if not self._flash_result(self._recv_u32_response(0x10+i,value_u32=int.from_bytes(recording.bytes[i*4:i*4+4],'big'))):return
+        token=zlib.crc32(recording.bytes+self._measured_domain_id.bytes+count.to_bytes(4,'big'))
+        if self._recv_u32_response(0x38,value_u32=token)!=token:
+            print("Measured capture token rejected/unknown; no start sent.");return
+        result=self._recv_u32_response(0x36,value_u32=count)
+        if self._flash_result(result) and result==count:
+            print(f"Measured capture accepted: {recording}, domain={self._measured_domain_id}, limit={count} pairs.")
+            print("Auto-stops; then flash_status, dump_measured LABEL, persist_buffer. No UTC is synthesized.")
+
+    def do_dump_measured(self, arg):
+        """dump_measured [label]: export frozen measured RAM with raw ticks, events, metadata and verified reconstructed binary."""
+        if not self._measured_ready(): return
+        stem=arg.strip() or 'measured_ram'
+        if Path(stem).name!=stem or stem in ('.','..'):
+            print("Use a label without directories");return
+        try:
+            image=download_v2(lambda p:self._tagged_read_block(0x37,0x3b,p))
+            directory=self.output_dir/(stem+'_'+datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+            meta=export_v2(image,directory,'MCU_RAM')
+            print(f"Verified {meta['summary']['samples']} measured RAM pairs; saved to {directory.resolve()}")
+            if meta.get('bench_injection'):
+                print("BENCH RAM only; persistence is blocked. Keep exported evidence before discarding or rebooting. UTC unavailable.")
+            else:
+                print("RAM remains volatile. Persist before reboot. Raw trigger ticks are measured; UTC unavailable.")
+        except (ValueError,OSError) as exc: print(f"Measured RAM dump rejected: {exc}; source retained.")
+
     def _flash_ready(self):
         if self.streaming:
             print("Stop legacy streaming first.")
@@ -860,7 +994,8 @@ Additional commands:
         errors = {1: 'busy', 2: 'invalid state', 3: 'invalid capture size',
                   4: 'missing UUID', 5: 'storage is nonblank/protected',
                   6: 'flash operation failed', 7: 'readback/CRC verification failed', 8: 'stale or mismatched recording identity',
-                  9: 'journal uncertain or exhausted; retained read-only', 10: 'matching durable ACK required before clear'}
+                  9: 'journal uncertain or exhausted; retained read-only', 10: 'matching durable ACK required before clear', 11: 'ADC fault latched; preserve diagnostics and reset MCU before another acquisition',
+                  12: 'timer domain unassigned; run measured_init', 13: 'unsupported MCU clock configuration',14: 'stack watermark margin insufficient or unavailable; bench test blocked'}
         if result is None:
             print("No response: outcome UNKNOWN. Query flash_status; do not retry destructively.")
             return False
@@ -922,7 +1057,10 @@ Additional commands:
         except (ValueError,OSError) as exc:
             print(f"No command sent: saved recording could not be verified/flushed: {exc}")
             return
+        if evidence.get("bench_injection"):
+            print("Bench RAM cannot be ACKed/cleared as flash. Use measured_bench_discard for its matching saved file.");return
         if not self._flash_ready(): return
+        if evidence.get("format_version",1)==2 and not self._measured_ready(): return
         if self._flash_capability not in (0x49500103, 0x49500104):
             print("Lifecycle capability requires firmware 0.0.3.240. No lifecycle command sent.")
             return
@@ -992,21 +1130,24 @@ Additional commands:
         if self._flash_result(result): print(f"Committed and readback verified: {result} pairs.")
 
     def do_verify_flash(self, arg):
-        """Read-only MCU verification of stage-one manifest/data CRCs."""
+        """Read-only MCU verification of v1/v2 manifest/data/metadata/event integrity."""
         if not self._flash_ready(): return
         result = self._recv_u32_response(0x17, timeout=15)
         if self._flash_result(result): print(f"Flash CRC/readback verification passed: {result} pairs.")
 
     def _flash_read_block(self, block_index):
+        return self._tagged_read_block(0x18, 0x1a, block_index)
+
+    def _tagged_read_block(self, command, tag, block_index):
         self._drain_pending_can_messages()
-        count = self._recv_u32_response(0x18, value_u32=block_index)
+        count = self._recv_u32_response(command, value_u32=block_index)
         if count != 256: raise ValueError(f"Block read rejected/unknown: {count}")
         data = bytearray()
         deadline = time.monotonic()+15
         while len(data)<1024 and time.monotonic()<deadline:
             with self.bus_lock:
                 msg = self._recv_frame(0.5)
-            if msg is None or msg.arbitration_id != PC_RESP_ID or len(msg.data)!=8 or msg.data[3]!=0x1a:
+            if msg is None or msg.arbitration_id != PC_RESP_ID or len(msg.data)!=8 or msg.data[3]!=tag:
                 continue
             seq = (msg.data[1]<<8)|msg.data[2]
             if seq != len(data)//4: raise ValueError("Dropped/reordered flash transfer frame; retry dump")
@@ -1023,6 +1164,13 @@ Additional commands:
             return
         try:
             manifest = self._flash_read_block(2)
+            if manifest[4:6]==b'\x02\0':
+                image=download_v2(self._flash_read_block,manifest)
+                directory=self.output_dir/(stem+'_'+datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+                meta=export_v2(image,directory,'MCU_FLASH')
+                print(f"Verified {meta['summary']['samples']} measured flash pairs; saved to {directory.resolve()}")
+                print("Raw MCU trigger ticks; UTC unavailable. No ACK/deletion sent. Binary is reconstructed.")
+                return
             count, blocks, _ = manifest_info(manifest)
             data = [self._flash_read_block(9+i) for i in range(blocks)]
             samples = validate_recording(manifest, data)
@@ -1075,6 +1223,7 @@ Additional commands:
             0: "stopped",
             1: "realtime",
             2: "buffered",
+            3: "measured capture",
         }.get(mode, f"unknown({mode})")
 
         print("Buffer status:")
@@ -1151,7 +1300,7 @@ Additional commands:
             # and value = number of stored records (may be 0).
             if cmd_id == self.CMD_STREAM_BUFFER:
                 if value & 0x80000000:
-                    print("RAM dump rejected by module (busy or retained-state restriction).")
+                    print("RAM dump rejected by module; for measured capture use dump_measured LABEL.")
                     return
                 record_count = value
                 print(f"Buffered record count: {record_count}")

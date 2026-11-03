@@ -14,11 +14,16 @@ def verified_file(path):
         data=handle.read()
         if len(data)!=131072: raise ValueError('Expected reconstructed 128 KiB recording binary')
         m=data[2048:3072]
-        count,n,_=manifest_info(m)
-        validate_recording(m,[data[(9+i)*1024:(10+i)*1024] for i in range(n)])
+        bench=False
+        if m[4:6]==b'\x02\0':
+            from flash_v2 import decode_recording
+            record=decode_recording(data);count=record['summary']['samples'];bench=record['metadata']['schema']==2
+        else:
+            count,n,_=manifest_info(m)
+            validate_recording(m,[data[(9+i)*1024:(10+i)*1024] for i in range(n)])
         handle.flush()
         os.fsync(handle.fileno())
-    return dict(recording_id=uuid.UUID(bytes=m[8:24]),manifest_crc=struct.unpack_from('<I',m,1016)[0],count=count)
+    return dict(recording_id=uuid.UUID(bytes=m[8:24]),manifest_crc=struct.unpack_from('<I',m,1016)[0],count=count,format_version=int.from_bytes(m[4:6],'little'),bench_injection=bench)
 
 def decode_journal(block):
     if len(block)!=1024 or block[:8]!=b'IPLG\x01\0\x04\0' or block[1020:]!=b'CMIT':

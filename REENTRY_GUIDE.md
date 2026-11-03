@@ -160,3 +160,26 @@ Review before further firmware changes:
 See TEST_RESULTS.md for today's measurements and limitations. Remaining bench
 work includes power-cycle retention, precise fill boundaries, long-duration
 streaming, deliberate CAN interruption, and calibrated physical stimuli.
+
+## Timing diagnostic checkpoint (.241)
+
+Use timing_reset, timing_start idle or timing_start can, timing_stop, then
+timing_status <label>. These modes retain existing RAM/flash; can mode logs a
+unique host CSV. JSON contains coherent MCU counters and CRC-checked timer data.
+Do not halt CCS during a measurement. Flash operations still stop acquisition.
+See [bench procedure](../../../workspace_v12/Inkley_PressureSensor/TIMING_MEASUREMENT.md).
+The .241 image is flashed. Acquisition-only/CAN and 1000-pair stopped-storage
+timing reports passed the reviewed checks; maximum-size 4094-pair tests remain
+pending. See the bench procedure for measured results and the next commands.
+
+Maximum-size .241 update: 4094-pair capture/persist/download and exact RAM/flash
+sample comparison passed. Persistence took 2.4029292 s with acquisition stopped.
+Current retained UUID: 64f906c8-461f-44a0-955c-17e21460d71d. Backup directory:
+Data/max4094_flash_01_20261102_150925_176265. Do not clear it; next is clean reboot,
+flash_recovery, verify_flash and dump_flash max4094_after_reboot_01 for comparison.
+
+Maximum-size clean-reboot check passed: post-reboot recording.bin is byte-identical
+and all 4094 ordered samples match the pre-reboot copy. Post-reboot directory:
+Data/max4094_after_reboot_01_20261102_151106_784281. Retain the COMMITTED recording.
+The bounded .241 checkpoint passed; continuous acquisition through flash remains
+unimplemented/unvalidated. See firmware TIMING_MEASUREMENT.md for acceptance.

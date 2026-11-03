@@ -43,6 +43,8 @@ import serial.tools.list_ports
 import os
 import time
 import uuid
+import json
+from timing_protocol import WORD_COUNT, collect_words, decode_snapshot
 from flash_protocol import manifest_info, validate_recording, validate_block
 from flash_lifecycle import verified_file
 from pathlib import Path
@@ -236,6 +238,10 @@ Additional commands:
   buffer_status    - Show firmware RAM buffer status
   dump_buffer      - Download buffered sample data and save to CSV
   read_flash       - Backward-compatible alias for dump_buffer
+  timing_reset     - Reset stopped timing diagnostics (.241+)
+  timing_start     - Start idle or can test without changing retained recordings
+  timing_stop      - Stop diagnostic acquisition
+  timing_status    - Save CRC-verified timing JSON report
   ack_flash        - Verify/flush saved binary, ACK transfer; retain local recording
   clear_flash      - Explicitly delete matching ACKed recording using saved binary
   flash_recovery   - Read-only partition recovery classification (.239+)
@@ -673,6 +679,8 @@ Additional commands:
 
     def do_quit(self, arg):
         """Exit the command line interface"""
+        if getattr(self, "_timing_active", False):
+            self.do_timing_stop("")
         if self.streaming:
             self.send_command(self.CMD_STOP_STREAM)
             self.streaming = False
@@ -751,6 +759,90 @@ Additional commands:
         self.expected_response_cmd = None
         return None
 
+    def _timing_ready(self):
+        if not self.initialize_can_bus(): return False
+        if not self.streaming: self._drain_pending_can_messages()
+        if self._recv_u32_response(0x0f) != 0x49500104:
+            print("Timing diagnostics require firmware 0.0.3.241. No test started.")
+            return False
+        return True
+
+    def do_timing_reset(self, arg):
+        """Reset volatile timing counters; acquisition must be stopped."""
+        if self._timing_ready() and self._flash_result(self._recv_u32_response(0x2b)):
+            print("Timing counters reset. No stored recording changed.")
+
+    def do_timing_start(self, arg):
+        """timing_start idle|can: acquire without RAM/flash writes; can also logs received samples."""
+        mode = {'idle': 1, 'can': 2}.get(arg.strip().lower())
+        if mode is None:
+            print("Usage: timing_start idle|can")
+            return
+        if self.streaming:
+            print("Stop streaming first.")
+            return
+        if not self._timing_ready(): return
+        result = self._recv_u32_response(0x2f, value_u32=mode)
+        if not self._flash_result(result): return
+        if result != mode:
+            print("Unexpected timing mode response; use timing_stop.")
+            return
+        self._timing_active = True
+        if mode == 2:
+            self.csv_file = 'timing_can_' + datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f') + '.csv'
+            self.streaming = True
+            self.stream_thread = threading.Thread(target=self.stream_data, daemon=True)
+            self.stream_thread.start()
+        print("Diagnostic acquisition started; retained RAM/flash unchanged. Run ~10 s, then timing_stop.")
+
+    def do_timing_stop(self, arg):
+        """Stop diagnostic acquisition, keeping diagnostics and stored recordings."""
+        if not self._timing_ready(): return
+        result = self._recv_u32_response(0x2f, value_u32=0)
+        if not self._flash_result(result): return
+        if result != 0:
+            print("Unexpected stop response; outcome unknown.")
+            return
+        self._timing_active = False
+        self.streaming = False
+        if self.stream_thread: self.stream_thread.join()
+        print("Diagnostic acquisition stopped. Use timing_status <label>.")
+
+    def do_timing_status(self, arg):
+        """timing_status [label]: retrieve ordered CRC-checked snapshot and save JSON."""
+        if self.streaming:
+            print("Use timing_stop before retrieving diagnostics.")
+            return
+        if not self._timing_ready(): return
+        count = self._recv_u32_response(0x2a)
+        if count != WORD_COUNT:
+            print(f"Timing snapshot unavailable or unsupported: {count}")
+            return
+        frames = []
+        deadline = time.monotonic() + 15
+        try:
+            while len(frames) < count and time.monotonic() < deadline:
+                with self.bus_lock: msg = self._recv_frame(0.1)
+                if msg and msg.arbitration_id == PC_RESP_ID and len(msg.data) == 8 and msg.data[3] == 0x2d:
+                    frames.append((int.from_bytes(msg.data[1:3], 'big'), bytes(msg.data[4:8])))
+            report = decode_snapshot(collect_words(frames, count))
+            report['host_received_at'] = datetime.datetime.now().astimezone().isoformat()
+            label = ''.join(c if c.isalnum() or c in '_-' else '_' for c in (arg.strip() or 'timing'))[:80]
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            path = self.output_dir / (label + '_' + datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f') + '.json')
+            path.write_text(json.dumps(report, indent=2), encoding='utf-8')
+            v = report['counters']; us = report['microseconds']
+            print(f"CRC-verified timing report saved: {path.resolve()}")
+            print(f"Pairs: attempts={v['attempts']}, complete={v['completed']}, timeouts={v['adc_timeouts']}, ADC errors={v['adc_errors']}")
+            print(f"Pair rate={report['pair_rate_hz']} Hz; trigger interval min/max={us['min_interval_ticks']:.3f}/{us['max_interval_ticks']:.3f} us")
+            print(f"Outside +/-10 us={v['interval_outside_10us']}; estimated missing slots={v['estimated_missing_slots']}")
+            print(f"CAN: queue drops={v['tx_queue_drops']}, TX failures={v['tx_failures']}, RX overruns software/hardware={v['rx_software_overruns']}/{v['rx_hardware_overruns']}")
+            print(f"Flash erase/program calls={v['erase_calls']}/{v['program_calls']}; max duration={us['erase_max_ticks']:.3f}/{us['program_max_ticks']:.3f} us")
+            print(f"Last storage kind={v['storage_kind']}, duration={us['storage_ticks']:.3f} us, ADC attempts during it={v['storage_attempts']}, flash calls={v['storage_flash_calls']}")
+            print("CPU-relative instrumentation; no UTC, aperture timing, or host delivery guarantee. Avoid CCS halts during measurements.")
+        except (ValueError, OSError) as exc:
+            print(f"Timing report rejected/not saved: {exc}")
+
     def _flash_ready(self):
         if self.streaming:
             print("Stop legacy streaming first.")
@@ -759,7 +851,7 @@ Additional commands:
             return False
         self._drain_pending_can_messages()
         self._flash_capability = self._recv_u32_response(0x0f)
-        if self._flash_capability not in (0x49500101, 0x49500102, 0x49500103):
+        if self._flash_capability not in (0x49500101, 0x49500102, 0x49500103, 0x49500104):
             print("Stage-one flash capability unavailable; firmware 0.0.3.238 or newer required.")
             return False
         return True
@@ -779,7 +871,7 @@ Additional commands:
 
     def _recovery_ready(self):
         if not self._flash_ready(): return False
-        if self._flash_capability not in (0x49500102, 0x49500103):
+        if self._flash_capability not in (0x49500102, 0x49500103, 0x49500104):
             print("Recovery/scratch capability requires firmware 0.0.3.239. No write sent.")
             return False
         return True
@@ -831,7 +923,7 @@ Additional commands:
             print(f"No command sent: saved recording could not be verified/flushed: {exc}")
             return
         if not self._flash_ready(): return
-        if self._flash_capability != 0x49500103:
+        if self._flash_capability not in (0x49500103, 0x49500104):
             print("Lifecycle capability requires firmware 0.0.3.240. No lifecycle command sent.")
             return
         request=uuid.uuid4()

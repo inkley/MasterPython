@@ -1,4 +1,4 @@
-﻿"""Offline flash protocol tests; no hardware or serial port access."""
+"""Offline flash protocol tests; no hardware or serial port access."""
 import contextlib
 import io
 import struct
@@ -56,6 +56,19 @@ class FlashTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()): cli.do_flash_capture('1000')
         self.assertEqual([x.args[0] for x in cli._recv_u32_response.call_args_list],[16,17,18,19,20])
         self.assertEqual(cli._recv_u32_response.call_args_list[-1].kwargs['value_u32'],1000)
+    def test_recovery_gates_scratch_writes_on_old_firmware(self):
+        cli=self.cli();cli._flash_ready=Mock(return_value=True);cli._flash_capability=0x49500101
+        cli._recv_u32_response=Mock()
+        with contextlib.redirect_stdout(io.StringIO()): cli.do_flash_scratch('erase')
+        cli._recv_u32_response.assert_not_called()
+    def test_scratch_address_is_not_host_selectable(self):
+        cli=self.cli();cli._recovery_ready=Mock(return_value=True);cli._recv_u32_response=Mock(return_value=0)
+        with contextlib.redirect_stdout(io.StringIO()): cli.do_flash_scratch('erase')
+        cli._recv_u32_response.assert_called_once_with(0x1c,timeout=30,value_u32=0x53524305)
+        cli._recv_u32_response.reset_mock()
+        with contextlib.redirect_stdout(io.StringIO()): cli.do_flash_scratch('erase 2')
+        cli._recv_u32_response.assert_not_called()
+
     def test_block_read_order(self):
         cli=self.cli();cli._drain_pending_can_messages=Mock();cli._recv_u32_response=Mock(return_value=256)
         cli.bus=Mock()

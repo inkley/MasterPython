@@ -43,7 +43,7 @@ import serial.tools.list_ports
 import os
 import time
 import uuid
-from flash_protocol import manifest_info, validate_recording
+from flash_protocol import manifest_info, validate_recording, validate_block
 from pathlib import Path
 
 # Global configuration
@@ -235,6 +235,8 @@ Additional commands:
   buffer_status    - Show firmware RAM buffer status
   dump_buffer      - Download buffered sample data and save to CSV
   read_flash       - Backward-compatible alias for dump_buffer
+  flash_recovery   - Read-only partition recovery classification (.239+)
+  flash_scratch    - Bench scratch-only fault fixtures (.239+; help flash_scratch)
   flash_capture    - Bounded RAM capture (e.g. flash_capture 1000)
   flash_stop       - Stop bounded capture early
   flash_status     - Read persistence state
@@ -753,8 +755,9 @@ Additional commands:
         if not self.initialize_can_bus():
             return False
         self._drain_pending_can_messages()
-        if self._recv_u32_response(0x0f) != 0x49500101:
-            print("Stage-one flash capability unavailable; firmware 0.0.3.238 required.")
+        self._flash_capability = self._recv_u32_response(0x0f)
+        if self._flash_capability not in (0x49500101, 0x49500102):
+            print("Stage-one flash capability unavailable; firmware 0.0.3.238 or newer required.")
             return False
         return True
 
@@ -769,6 +772,49 @@ Additional commands:
             print(f"Module rejected/failed: {errors.get(result & 0x7fffffff, hex(result))}")
             return False
         return True
+
+    def _recovery_ready(self):
+        if not self._flash_ready(): return False
+        if self._flash_capability != 0x49500102:
+            print("Recovery/scratch capability requires firmware 0.0.3.239. No write sent.")
+            return False
+        return True
+
+    def do_flash_recovery(self, arg):
+        """Read-only actual partition classification, including unreferenced blocks."""
+        if not self._recovery_ready(): return
+        result=self._recv_u32_response(0x1b, timeout=15)
+        if not self._flash_result(result): return
+        states={0:'EMPTY',1:'COMMITTED',2:'INCOMPLETE_DAMAGED_OR_UNSUPPORTED',3:'COMMITTED_WITH_QUARANTINE'}
+        print(f"Recovery: {states.get(result>>24,'UNKNOWN')}; validated flash pairs={result & 0xffffff}")
+        print("Read-only scan; no data erased/repaired. Unknown blocks remain protected.")
+
+    def do_flash_scratch(self, arg):
+        """Bench-only: flash_scratch inspect|torn|commit|corrupt|valid|erase; writes ONLY block 7."""
+        operation=arg.strip().lower()
+        actions={'torn':1,'commit':2,'corrupt':3,'valid':4,'erase':5}
+        if operation not in (*actions,'inspect'):
+            print("Usage: flash_scratch inspect|torn|commit|corrupt|valid|erase")
+            return
+        if not self._recovery_ready(): return
+        if operation=='inspect':
+            try:
+                data=self._flash_read_block(7)
+                if data==b'\xff'*1024: result='ERASED_BYTES_OBSERVED (not proof of electrical erase quality)'
+                else:
+                    try: validate_block(data,1); result='VALID_FIXTURE_ENVELOPE'
+                    except ValueError as exc: result=f'INVALID_OR_UNCOMMITTED: {exc}'
+                directory=self.output_dir/('scratch_'+datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+                directory.mkdir(parents=True,exist_ok=False)
+                (directory/'block7.bin').write_bytes(data)
+                print(f"Scratch block 7: {result}. Saved {directory.resolve()}")
+            except (ValueError,OSError) as exc: print(f"Scratch inspection failed: {exc}")
+            return
+        print(f"Bench {operation}: modifying ONLY scratch block 7 at 0x21C00; committed recording must verify.")
+        result=self._recv_u32_response(0x1c,timeout=30,value_u32=0x53524300|actions[operation])
+        if self._flash_result(result):
+            print("Scratch operation completed; committed recording reverified by MCU.")
+            print("This fixture is not evidence of power loss during an active flash operation.")
 
     def do_flash_capture(self, arg):
         """flash_capture <pairs>: new bounded RAM capture, no flash writes yet."""

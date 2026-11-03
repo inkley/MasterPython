@@ -71,3 +71,22 @@ Conclusion:
 The RAM-first workflow is validated for empty, wrapped, and maximum-capacity
 buffer dumps. Buffered playback sequence checks passed for both the 256-sample
 wrap test and the 4094-sample maximum-capacity test.
+
+## 2026-11-02 - Stopped flash persistence and recovery checkpoint
+
+Eval firmware .238: 1000-pair bounded capture persisted, MCU verified and host
+validated. RAM CSV, repeated flash CSV/binary, and clean-power-cycle download
+matched exactly. UUID 608e18dd-b8ca-49dd-ac3f-36c82bb02629.
+Firmware .239 upgrade with CCS Necessary Pages Only / 16 MHz retained the same
+recording; boot recovery COMMITTED and 1000 pairs verified. Scratch block 7
+fixtures passed missing-commit rejection, marker completion, bad-CRC rejection,
+quarantine and completed erase. Final downloaded CSV and reconstructed binary
+still matched original byte-for-byte. Physical in-flight power-cut tests pending.
+
+Final recording binary SHA256:
+9b5560e402f721db6377d431f9b9850e58a29e6b0915c90ebeeca22163633ac8.
+Host unit tests: 22 passed; firmware repo: 8 format + 5 timer checks passed.
+TI Debug build and ELF partition/vector/stack validation passed. Detailed bench
+procedure/results are in firmware repository FLASH_RECOVERY_TEST.md and
+STOPPED_FLASH_TEST.md. Acquisition times remain nominal, gap detection incomplete;
+no continuous background flash acquisition, ACK or recording-clear lifecycle yet.

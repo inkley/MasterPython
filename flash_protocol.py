@@ -1,4 +1,4 @@
-﻿"""Read-only validation of stage-one nominal flash recordings; no hardware access."""
+"""Read-only validation of stage-one nominal flash recordings; no hardware access."""
 import struct
 import zlib
 
@@ -47,8 +47,29 @@ def validate_recording(manifest,blocks):
         if block[end:1016]!=b'\xff'*(1016-end): raise ValueError('Invalid padding')
         crc=zlib.crc32(block,crc)
     if len(samples)!=count or crc!=expected_crc: raise ValueError('Recording CRC/count mismatch')
+    if struct.unpack_from('<QQ',manifest,32)!=(0,0) or struct.unpack_from('<Q',manifest,128)[0]!=0 or struct.unpack_from('<Q',manifest,152)[0]!=count*1000:
+        raise ValueError('Invalid nominal manifest timing')
     attempts,timeouts=struct.unpack_from('<QQ',manifest,112)
     other=struct.unpack_from('<Q',manifest,180)[0]
     if attempts!=count or timeouts or other: raise ValueError('Unaccounted acquisition failure')
     if struct.unpack_from('<QQ',manifest,136)!=(0,count-1): raise ValueError('Invalid first/last slot')
     return samples
+
+def recover_partition(image):
+    """Read-only classification. Never infers erased space is safe after a power fault."""
+    if len(image)!=131072:
+        raise ValueError('Expected entire 128 KiB partition image')
+    if image==b'\xff'*len(image):
+        return dict(state='EMPTY', samples=0, quarantine=[], reason='No programmed bytes observed')
+    blocks=[image[i:i+1024] for i in range(0,len(image),1024)]
+    try:
+        count,n,_=manifest_info(blocks[2])
+        samples=validate_recording(blocks[2],blocks[9:9+n])
+    except ValueError as exc:
+        return dict(state='INCOMPLETE_DAMAGED_OR_UNSUPPORTED', samples=0,
+                    quarantine=[i for i,b in enumerate(blocks) if b!=b'\xff'*1024],reason=str(exc))
+    expected={2,*range(9,9+n)}
+    extra=[i for i,b in enumerate(blocks) if i not in expected and b!=b'\xff'*1024]
+    return dict(state='COMMITTED_WITH_QUARANTINE' if extra else 'COMMITTED',
+                samples=len(samples),quarantine=extra,
+                reason='Validated nominal v1 recording; extra blocks never reclaimed automatically')

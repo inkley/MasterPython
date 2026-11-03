@@ -90,3 +90,14 @@ TI Debug build and ELF partition/vector/stack validation passed. Detailed bench
 procedure/results are in firmware repository FLASH_RECOVERY_TEST.md and
 STOPPED_FLASH_TEST.md. Acquisition times remain nominal, gap detection incomplete;
 no continuous background flash acquisition, ACK or recording-clear lifecycle yet.
+
+## 2026-11-02 - Verified transfer and reusable capture lifecycle
+
+Firmware .240 bench: ACK retained first 1000-pair recording unchanged and survived
+power-cycle. Explicit clear yielded CLEARED; next capture without MCU reset used
+UUID d1805d10-f4a1-405c-a62a-b6571318c110. All 1000 second-recording pairs matched
+RAM CSV, flash CSV and CRC-validated binary. Stale clear using first-recording
+file was rejected; second CSV/binary stayed byte-identical afterward.
+Detailed evidence: firmware FLASH_LIFECYCLE.md. Physical power loss during
+journal/program/erase, continuous acquisition, and wear leveling remain pending.
+33 host tests plus 13 firmware-repository offline checks and layout check passed.

@@ -44,6 +44,7 @@ import os
 import time
 import uuid
 from flash_protocol import manifest_info, validate_recording, validate_block
+from flash_lifecycle import verified_file
 from pathlib import Path
 
 # Global configuration
@@ -235,6 +236,8 @@ Additional commands:
   buffer_status    - Show firmware RAM buffer status
   dump_buffer      - Download buffered sample data and save to CSV
   read_flash       - Backward-compatible alias for dump_buffer
+  ack_flash        - Verify/flush saved binary, ACK transfer; retain local recording
+  clear_flash      - Explicitly delete matching ACKed recording using saved binary
   flash_recovery   - Read-only partition recovery classification (.239+)
   flash_scratch    - Bench scratch-only fault fixtures (.239+; help flash_scratch)
   flash_capture    - Bounded RAM capture (e.g. flash_capture 1000)
@@ -756,7 +759,7 @@ Additional commands:
             return False
         self._drain_pending_can_messages()
         self._flash_capability = self._recv_u32_response(0x0f)
-        if self._flash_capability not in (0x49500101, 0x49500102):
+        if self._flash_capability not in (0x49500101, 0x49500102, 0x49500103):
             print("Stage-one flash capability unavailable; firmware 0.0.3.238 or newer required.")
             return False
         return True
@@ -764,7 +767,8 @@ Additional commands:
     def _flash_result(self, result):
         errors = {1: 'busy', 2: 'invalid state', 3: 'invalid capture size',
                   4: 'missing UUID', 5: 'storage is nonblank/protected',
-                  6: 'flash operation failed', 7: 'readback/CRC verification failed'}
+                  6: 'flash operation failed', 7: 'readback/CRC verification failed', 8: 'stale or mismatched recording identity',
+                  9: 'journal uncertain or exhausted; retained read-only', 10: 'matching durable ACK required before clear'}
         if result is None:
             print("No response: outcome UNKNOWN. Query flash_status; do not retry destructively.")
             return False
@@ -775,7 +779,7 @@ Additional commands:
 
     def _recovery_ready(self):
         if not self._flash_ready(): return False
-        if self._flash_capability != 0x49500102:
+        if self._flash_capability not in (0x49500102, 0x49500103):
             print("Recovery/scratch capability requires firmware 0.0.3.239. No write sent.")
             return False
         return True
@@ -785,7 +789,7 @@ Additional commands:
         if not self._recovery_ready(): return
         result=self._recv_u32_response(0x1b, timeout=15)
         if not self._flash_result(result): return
-        states={0:'EMPTY',1:'COMMITTED',2:'INCOMPLETE_DAMAGED_OR_UNSUPPORTED',3:'COMMITTED_WITH_QUARANTINE'}
+        states={0:'EMPTY',1:'COMMITTED',2:'INCOMPLETE_DAMAGED_OR_UNSUPPORTED',3:'COMMITTED_WITH_QUARANTINE',4:'ACKNOWLEDGED',5:'CLEARED',6:'CLEAR_PENDING',7:'JOURNAL_UNCERTAIN'}
         print(f"Recovery: {states.get(result>>24,'UNKNOWN')}; validated flash pairs={result & 0xffffff}")
         print("Read-only scan; no data erased/repaired. Unknown blocks remain protected.")
 
@@ -816,6 +820,46 @@ Additional commands:
             print("Scratch operation completed; committed recording reverified by MCU.")
             print("This fixture is not evidence of power loss during an active flash operation.")
 
+    def _lifecycle_action(self, arg, command):
+        path=Path(arg.strip())
+        if not arg.strip():
+            print("Usage: ack_flash <recording.bin path> OR clear_flash <recording.bin path>")
+            return
+        try:
+            evidence=verified_file(path)
+        except (ValueError,OSError) as exc:
+            print(f"No command sent: saved recording could not be verified/flushed: {exc}")
+            return
+        if not self._flash_ready(): return
+        if self._flash_capability != 0x49500103:
+            print("Lifecycle capability requires firmware 0.0.3.240. No lifecycle command sent.")
+            return
+        request=uuid.uuid4()
+        words=request.bytes+evidence['recording_id'].bytes
+        for i in range(8):
+            value=int.from_bytes(words[i*4:i*4+4],'big')
+            if not self._flash_result(self._recv_u32_response(0x20+i,value_u32=value)):return
+        action='Acknowledging verified transfer of' if command==0x28 else 'Explicitly deleting'
+        print(f"{action} {evidence['recording_id']} ({evidence['count']} pairs).")
+        result=self._recv_u32_response(command,timeout=90,value_u32=evidence['manifest_crc'])
+        if not self._flash_result(result):return
+        if command==0x28:
+            if result!=evidence['count']:
+                print("Unexpected ACK count; query flash_recovery before proceeding")
+                return
+            print("ACK durable. Local flash recording retained; clear_flash is a separate command.")
+        elif result==0:
+            print("Specified recording cleared. Host file retained. flash_capture can start a NEW UUID without MCU reset.")
+        else: print("Unexpected clear response; query flash_recovery")
+
+    def do_ack_flash(self, arg):
+        """ack_flash <recording.bin>: verify/flush saved binary and durably ACK matching module recording."""
+        self._lifecycle_action(arg,0x28)
+
+    def do_clear_flash(self, arg):
+        """clear_flash <recording.bin>: explicitly delete the matching ACKNOWLEDGED recording; keep host copy."""
+        self._lifecycle_action(arg,0x29)
+
     def do_flash_capture(self, arg):
         """flash_capture <pairs>: new bounded RAM capture, no flash writes yet."""
         try:
@@ -845,7 +889,7 @@ Additional commands:
         if not self._flash_ready(): return
         result = self._recv_u32_response(0x16)
         if self._flash_result(result):
-            states = {0:'EMPTY',1:'CAPTURING',2:'RAM_READY',3:'COMMITTED',4:'FAULT',5:'OCCUPIED (reboot/nonblank media)'}
+            states = {0:'EMPTY',1:'CAPTURING',2:'RAM_READY',3:'COMMITTED',4:'FAULT',5:'OCCUPIED (unknown/protected media)',6:'CLEARED',7:'CLEAR_PENDING',8:'ACKNOWLEDGED'}
             print(f"Flash state: {states.get(result >> 24, 'UNKNOWN')}; RAM pairs={result & 0xffffff}")
 
     def do_persist_buffer(self, arg):

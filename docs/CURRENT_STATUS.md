@@ -175,3 +175,73 @@ Final bench cleanup confirmed by operator: matching disposable bench RAM discard
 recovery COMMITTED1024 and flash CRC verification passed. Protected recording
 899dee62-92d9-48ea-94c5-fcf239668008 remains intact. Resume with ADC-error,
 event-overflow and broader stack checks; do not clear the protected recording.
+
+
+### .244 controlled-fault candidate - 2026-11-03
+
+Build1012 adds protected RAM-only ADC-error/timeout and event-overflow profiles.
+Debug build/ELF layout,92 host and13 firmware-tool offline tests pass. Not flashed;
+ADC/error/overflow hardware acceptance remains OPEN. Follow
+[the controlled-fault runbook](reference/BENCH_ADC_OVERFLOW.md). The existing normal
+1024-pair recording stays protected; no flash erase/program is part of these tests.
+
+
+2026-11-03: .244 controlled event-detail overflow passed on board (34 pairs,
+32 retained/33 total/1 lost, stop4, sticky loss flags). Protected flash is
+byte-identical to .242 backup. Matching bench RAM discard is pending after a
+literal placeholder path was rejected. ADC fault hardware tests remain OPEN.
+See the controlled-fault runbook for evidence paths and exact cleanup command.
+
+
+2026-11-03 overflow cleanup confirmed by operator: matching saved bench RAM
+was discarded successfully; protected flash reverified and retained. Subsequent
+flash_recovery returned COMMITTED1024 and verify_flash passed1024 pairs.
+Overflow fixture including cleanup is complete. ADC-error/timeout tests remain OPEN.
+
+
+2026-11-03 ADC-error capture verified from saved binary:
+4510175b-00bc-4252-8e05-8f293b00b8d2, profile2;15 valid pairs/16 attempts,
+1 ADC error/0 timeouts, stop_reason3, quality_bits1. One terminal ADC_ERROR
+ event at attempt15, reason2, validity7 (no related valid sample); no lost
+ events or estimated missing slots. Diagnostics:999.450-1000.000us, zero CAN
+ losses/errors/overruns and zero flash calls. Observed stack unused3552/4096
+ bytes (544 touched/unknown), not worst-case acceptance. Protected flash CRC
+ verification passed1024 pairs. Export:
+Data/bench_adc_error_20261103_142401_651539; timing:
+Data/bench_adc_error_20261103_142401_686604.json.
+Capture/error reporting passed this fixture. Matching RAM cleanup and error11
+restart-latch check remain PENDING; timeout hardware test remains OPEN.
+
+
+2026-11-03 ADC-error cleanup/latch confirmed by operator: matching bench RAM
+discarded, recovery COMMITTED1024, flash verification passed1024 pairs. Retry
+without reset rejected with ADC fault latched; subsequent status COMMITTED,
+RAM pairs0. Controlled ADC-error fixture including restart latch is complete.
+ADC-timeout hardware validation remains OPEN.
+
+
+2026-11-03 ADC-timeout capture verified from saved binary:
+8380fd18-80d1-4a23-b906-b7ffaf4cb6df, profile3; fresh timer domain
+7fe94c9e-eb48-42cf-9d31-3e68b20ddf77.15 valid pairs/16 attempts,
+1 timeout/0 ADC errors, stop_reason3, quality_bits1. One terminal ADC_TIMEOUT
+ event at attempt15, reason1, validity7 (no related valid sample); no lost events
+ or estimated missing slots. Diagnostics999.450-1000.000us, zero CAN losses/
+ errors/overruns and zero flash calls. Stack unused3600/4096 bytes; protected
+ flash verification passed1024 pairs. Export:
+Data/bench_adc_timeout_20261103_142552_686154; timing:
+Data/bench_adc_timeout_20261103_142552_719487.json.
+Timeout capture/reporting passed this fixture. Matching RAM cleanup, timeout
+restart-latch rejection and final post-reset flash verification remain PENDING.
+
+
+### .244 final controlled-fault acceptance - 2026-11-03
+
+Controlled ADC-error handling and event-detail overflow checklist item COMPLETE.
+ADC-error and timeout fixtures passed terminal fault reporting, matching RAM
+cleanup and restart-latch rejection. Event overflow passed32 retained/33 total/
+1 lost with sticky flags and stopped capture. After requested power-cycle/CLI
+restart, .244 recovery COMMITTED1024 and flash CRC/readback verification passed.
+Protected recording899dee62-92d9-48ea-94c5-fcf239668008 remains intact.
+Earlier pending statements above describe intermediate checkpoints. Evidence:
+[controlled-fault runbook](reference/BENCH_ADC_OVERFLOW.md). Broader stack, RTC/UTC,
+physical interruption and independent-supply testing remain separate open work.

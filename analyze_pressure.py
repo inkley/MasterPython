@@ -146,7 +146,7 @@ def main():
         axis.legend(loc='upper right')
     axes[-1].set_xlabel('Measured trigger elapsed time (s); UTC unavailable' if measured is not None else 'Nominal time (s); ADC acquisition timestamps unavailable')
     prefix='OFFLINE fixture: ' if measured is not None and measured['origin']=='OFFLINE' else ''
-    if measured is not None and measured['origin']=='MCU_BENCH_RAM':prefix='BENCH gap injection: '
+    if measured is not None and measured['origin']=='MCU_BENCH_RAM':prefix='BENCH controlled injection: '
     suffix=' — timing quality degraded' if measured is not None and any(measured['quality']) else ''
     fig.suptitle(prefix+args.csv.name+suffix)
     fig.savefig(outdir / 'pressure.png', dpi=200)

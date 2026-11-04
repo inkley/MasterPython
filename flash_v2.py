@@ -147,7 +147,7 @@ def validate_metadata(m):
     require(m['capture_accepted_ticks'] <= m['first_attempt_ticks'] == m['schedule_origin_ticks'], 'Metadata origin')
     require(1 <= m['sample_limit'] <= 1024 and m['event_limit'] == 32, 'Capture limits')
     require(m['utc_schema'] == m['mapping_count'] == 0, 'Unsupported UTC/features')
-    require((m['schema'],m['feature_bits']) in ((1,0),(2,1)), 'Unsupported metadata feature profile')
+    require((m['schema'],m['feature_bits']) in ((1,0),(2,1),(2,2),(2,3),(2,4)), 'Unsupported metadata feature profile')
     for bit, key in ((8, 'proxy_latency_bound_ns'), (16, 'drift_bound_ppb')):
         require(bool(v & bit) or m[key] == 0, 'Unknown bound must encode zero')
     require(not v & 32, 'Calibrated frequency unsupported in first profile')

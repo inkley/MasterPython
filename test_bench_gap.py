@@ -43,7 +43,7 @@ class BenchTests(unittest.TestCase):
         self.assertEqual(v.recover_image(image())['state'],'COMMITTED')
         s,e,meta,m=fixture();meta['feature_bits']=1
         with self.assertRaises(ValueError):v.encode_recording(RID,DOMAIN,s,e,meta,m)
-        meta.update(schema=2,feature_bits=2)
+        meta.update(schema=2,feature_bits=5)
         with self.assertRaises(ValueError):v.encode_recording(RID,DOMAIN,s,e,meta,m)
 
     def test_export_carries_bench_label_and_real_tick_gap(self):

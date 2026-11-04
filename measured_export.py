@@ -47,7 +47,8 @@ def export_v2(image, directory, origin):
                     timestamp_reference='PRE_SOFTWARE_TRIGGER', utc=None,
                     utc_error_bound_ns=None, summary=m,
                     clock={k:(v.hex() if isinstance(v,bytes) else v) for k,v in r['metadata'].items()},
-                    reconstructed_partition=True,bench_injection=bench)
+                    reconstructed_partition=True,bench_injection=bench,
+                    bench_profile=({1:'gap',2:'adc_error',3:'adc_timeout',4:'event_overflow'}.get(r['metadata']['feature_bits']) if bench else None))
     (directory/'recording_metadata.json').write_text(json.dumps(metadata,indent=2)+'\n',encoding='utf-8')
     (directory/'events.json').write_text(json.dumps(r['events'],indent=2)+'\n',encoding='utf-8')
     with (directory/'samples.csv').open('x',newline='') as f:

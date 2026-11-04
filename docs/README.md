@@ -11,6 +11,8 @@ remain in ignored MasterPython/Data. Root CHANGES.md is a historical change log.
 
 ## Reference
 
+- [Controlled ADC fault and event-detail overflow bench (.244)](reference/BENCH_ADC_OVERFLOW.md)
+
 - [Short RAM-only gap and stack checkpoint (.243)](reference/BENCH_GAP_STACK.md)
 
 - [Measured .242 implementation and hardware checkpoints](reference/MEASURED_IMPLEMENTATION.md)

@@ -241,6 +241,7 @@ Additional commands:
   dump_buffer      - Download buffered sample data and save to CSV
   read_flash       - Backward-compatible alias for dump_buffer
   measured_bench_gap - RAM-only 5 ms delay test using protected-record backup (.243+)
+  measured_bench_fault - RAM-only ADC error/timeout or event-overflow test (.244+)
   measured_bench_discard - Discard only matching exported bench RAM (.243+)
   stack_status     - Read observed stack watermark (.243+)
   measured_init    - Assign/query boot timer domain (.242+)
@@ -888,13 +889,36 @@ Additional commands:
             print(f'BENCH RAM capture {recording}:64 pairs, fixed5 ms service delay after attempt16.')
             print('Protected flash retained. Wait1 s, then dump_measured bench_gap_01; persist_buffer is blocked for bench data.')
 
+    def do_measured_bench_fault(self, arg):
+        """measured_bench_fault adc_error|adc_timeout|event_overflow <protected recording.bin>: RAM-only controlled negative test (.244+)."""
+        parts=arg.strip().split(maxsplit=1)
+        profiles={'adc_error':0x3a,'adc_timeout':0x3b,'event_overflow':0x3c}
+        if len(parts)!=2 or parts[0] not in profiles:
+            print('Usage: measured_bench_fault adc_error|adc_timeout|event_overflow <protected recording.bin>');return
+        profile,path=parts
+        try:evidence=verified_file(path.strip().strip('"'))
+        except (ValueError,OSError) as exc:print(f'No test started: {exc}');return
+        if evidence['format_version']!=2 or evidence.get('bench_injection'):
+            print('Requires a protected normal v2 recording.');return
+        if not self._bench_ready():return
+        if self._recv_u32_response(0x30,value_u32=9)!=0x424e4302:
+            print('Controlled fault capability requires .244; no test started.');return
+        self._measured_domain_id=None;self.do_measured_init('')
+        if self._measured_domain_id is None:return
+        recording=uuid.uuid4()
+        if not self._bench_stage(recording,evidence['recording_id']):return
+        result=self._recv_u32_response(profiles[profile],value_u32=evidence['manifest_crc'])
+        if self._flash_result(result) and result==64:
+            print(f'BENCH RAM {profile}: {recording}. Wait1 s, then dump_measured bench_{profile}.')
+            print('Protected flash retained; persistence blocked. ADC fault profiles latch acquisition until MCU reset.')
+
     def do_measured_bench_discard(self, arg):
         """measured_bench_discard <bench recording.bin>: verify saved bench evidence, discard only matching frozen RAM; flash retained."""
         try:
             path=Path(arg.strip().strip('"'));evidence=verified_file(path)
             from flash_v2 import decode_recording
             r=decode_recording(path.read_bytes())
-            if r['metadata']['schema']!=2 or r['metadata']['feature_bits']!=1:raise ValueError('Not a bench-gap recording')
+            if r['metadata']['schema']!=2 or r['metadata']['feature_bits'] not in (1,2,3,4):raise ValueError('Not a supported bench recording')
         except (ValueError,OSError) as exc:print(f'No discard sent: {exc}');return
         if not self._bench_ready():return
         if not self._bench_stage(uuid.uuid4(),evidence['recording_id']):return

@@ -9,3 +9,10 @@ __pycache__/
 # User data / logs
 Data/
 .venv/
+
+# Generated review/build artifacts
+output/
+tmp/
+
+# OS metadata
+.DS_Store

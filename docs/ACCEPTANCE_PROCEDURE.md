@@ -1,11 +1,10 @@
-> For the unflashed .242 measured candidate, follow [A--C checkpoints](reference/MEASURED_IMPLEMENTATION.md)
-> as well. This runbook retains the validated .241 bounded workflow as its baseline.
-
 # Repeatable bounded-logging acceptance procedure
 
-Scope: .241-compatible eval-board capture, stopped persistence, verified transfer,
-ACK, explicit clear, restart and clean-reboot retention. This does not certify
-UTC, continuous flash acquisition, physical power cuts or the custom PCB.
+Scope: .244 eval-board bounded capture, stopped persistence, verified transfer,
+ACK, explicit clear, restart, and clean-reboot retention. Use the
+[firmware guide](FIRMWARE_GUIDE.md) for the current measured-v2 workflow and
+storage-state rules. This procedure does not certify UTC, continuous flash
+acquisition, physical power cuts, independent-power operation, or the custom PCB.
 Read [current status](CURRENT_STATUS.md) first.
 
 ## 1. Identify the test and run offline checks
@@ -18,14 +17,14 @@ names overwrite. A source commit alone does not identify locally modified firmwa
 From MasterPython in PowerShell:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest test_reentry test_flash_protocol test_flash_recovery test_flash_lifecycle test_timing_protocol test_flash_v2 test_measured_pipeline test_bench_gap
+.\.venv\Scripts\python.exe -m unittest discover -s tests -t . -p "test_*.py"
 ```
 
-Current: 61 host tests (40 validated-runtime regressions plus21 offline-only v2 groups). From the firmware repository:
+Current: 92 host tests, including measured-v2, lifecycle, timing, and controlled
+bench-fixture coverage. From the firmware repository:
 
 ```powershell
-python tools/test_timer.py
-python tools/test_log_format.py
+python -m unittest discover -s tests -t . -p "test_*.py"
 & C:\ti\ccs1281\ccs\utils\bin\gmake.exe -s -C Debug all
 python tools/verify_firmware_layout.py Debug/Inkley_PressureSensor.out
 ```

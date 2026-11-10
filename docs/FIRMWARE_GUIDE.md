@@ -404,8 +404,7 @@ claiming equivalence to `.244`.
 From the firmware repository:
 
 ```powershell
-python tools/test_timer.py
-python tools/test_log_format.py
+python -m unittest discover -s tests -t . -p "test_*.py"
 & C:\ti\ccs1281\ccs\utils\bin\gmake.exe -s -C Debug all
 python tools/verify_firmware_layout.py Debug/Inkley_PressureSensor.out
 ```

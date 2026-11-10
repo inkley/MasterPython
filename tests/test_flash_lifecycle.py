@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock,patch
 import uuid
 from flash_lifecycle import *
-from test_flash_recovery import fixture
+from .test_flash_recovery import fixture
 from InkleySensor import CANBusCommander
 
 SOURCE=fixture()

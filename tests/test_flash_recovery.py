@@ -1,6 +1,6 @@
 """Synthetic interrupted-write/erase and corruption tests; no physical flash access."""
 import unittest
-from test_flash_protocol import recording
+from .test_flash_protocol import recording
 from flash_protocol import recover_partition
 
 SIZE=131072

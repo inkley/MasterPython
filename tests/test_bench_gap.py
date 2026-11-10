@@ -9,7 +9,7 @@ from unittest.mock import Mock,patch
 import uuid
 import numpy as np
 import flash_v2 as v
-from test_flash_v2 import fixture,RID,DOMAIN,image
+from .test_flash_v2 import fixture,RID,DOMAIN,image
 from measured_export import export_v2
 from measured_time import load_measured_time
 from flash_lifecycle import verified_file

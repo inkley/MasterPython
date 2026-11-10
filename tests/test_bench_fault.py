@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 import flash_v2 as v
-from test_flash_v2 import fixture, RID, DOMAIN
+from .test_flash_v2 import fixture, RID, DOMAIN
 from measured_export import export_v2
 from InkleySensor import CANBusCommander
 

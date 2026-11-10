@@ -116,11 +116,11 @@ rendered and visually checked. It is synthetic evidence, not a sensor measuremen
 Reproduce in MasterPython:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest test_reentry test_flash_protocol test_flash_recovery test_flash_lifecycle test_timing_protocol test_flash_v2 test_measured_pipeline
+.\.venv\Scripts\python.exe -m unittest discover -s tests -t . -p "test_*.py"
 ```
 
 From firmware root build Debug, run tools/verify_firmware_layout.py on its .out,
-run tools/check_metadata_v2.py, tools/test_timer.py and tools/test_log_format.py.
+run `tools/check_metadata_v2.py` and the firmware repository's `tests/` suite.
 The RAM checker now recognizes the new arena/event/stack layout without subtracting
 an obsolete array twice. Canonical v2 JSON offsets are unchanged.
 

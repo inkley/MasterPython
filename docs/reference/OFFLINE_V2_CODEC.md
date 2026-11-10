@@ -14,7 +14,7 @@ timestamp semantics. .241 and the retained v1 recording remain unchanged.
 - flash_v2.py: explicit little-endian encoding, strict block/record validation,
   journal snapshots and read-only partition classification.
 - metadata_v2_schema.json: byte-identical mirror of firmware tools/metadata_v2_schema.json.
-- test_flash_v2.py:21 parameterized/adversarial test groups with synthetic images.
+- `tests/test_flash_v2.py`: 21 parameterized/adversarial test groups with synthetic images.
 
 Use from an offline Python session with MasterPython on the import path:
 
@@ -91,7 +91,7 @@ is promoted to a complete recording without valid manifest/stream/count semantic
 From MasterPython:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest test_reentry test_flash_protocol test_flash_recovery test_flash_lifecycle test_timing_protocol test_flash_v2
+.\.venv\Scripts\python.exe -m unittest discover -s tests -t . -p "test_*.py"
 ```
 
 61 host tests passed (40 existing +21 new groups). Firmware timer/format suites

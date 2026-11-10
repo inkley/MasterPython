@@ -72,7 +72,7 @@ class V2Tests(unittest.TestCase):
         self.assertEqual(golden,bytes.fromhex('020000000100000011000000bc0aef0d'))
         self.assertEqual(v.bitmap({2,3,9}),bytes.fromhex('0c02')+bytes(14))
         self.assertEqual(zlib.crc32(b'123456789'),0xcbf43926)
-        from test_flash_recovery import fixture as old_fixture
+        from .test_flash_recovery import fixture as old_fixture
         old=old_fixture()
         with self.assertRaises(ValueError):v.decode_recording(old)
         self.assertEqual(v.recover_image(old)['state'],'LEGACY_V1_PROTECTED')
@@ -202,7 +202,7 @@ class V2Tests(unittest.TestCase):
             self.assertEqual(v.recover_image(bad)['samples'],0)
         other=v.encode_recording(uuid.uuid4(),uuid.uuid4(),*fixture(n=58))
         self.assertEqual(v.recover_image(replace_page(raw,10,other[10*1024:11*1024]))['samples'],0)
-        from test_flash_recovery import fixture as old_fixture
+        from .test_flash_recovery import fixture as old_fixture
         old=old_fixture()
         self.assertEqual(v.recover_image(replace_page(raw,9,old[9*1024:10*1024]))['samples'],0)
 

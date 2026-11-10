@@ -9,6 +9,18 @@ differential-pressure channels. Firmware companion: [PressureSensor](https://git
 - [Specifications and historical evidence index](docs/README.md)
 - [Development quick start](REENTRY_GUIDE.md)
 
+## Repository layout
+
+- `InkleySensor.py`: interactive CAN CLI and hardware-facing commands.
+- `flash_*.py`, `measured_*.py`, and `timing_protocol.py`: recording,
+  lifecycle, decoding, and timing support.
+- `analyze_pressure.py`: offline CSV analysis and plotting.
+- `tests/`: offline host regression suite; no sensor hardware is opened.
+- `docs/`: current procedures, specifications, and archived evidence.
+- `Data/`: local acquisition evidence, intentionally excluded from Git.
+- `output/` and `tmp/`: generated review artifacts and scratch files,
+  intentionally excluded from Git.
+
 ## Setup and launch
 
 Validated Windows setup uses a SLCAN/CANable adapter at 1Mbps, last tested on COM5.
@@ -22,10 +34,11 @@ python -m venv .venv
 ```
 
 requirements-lock.txt records the previously captured environment; requirements.txt
-is the maintained dependency input. Firmware .241 is the validated baseline.
-
-Candidate .242 adds measured_capture, dump_measured and raw-tick-aware plots;
-[hardware acceptance is pending](docs/reference/MEASURED_IMPLEMENTATION.md).
+is the maintained dependency input. Firmware build 1012 / version 0.0.3.244 is the
+validated bounded-recording baseline. It includes measured capture, raw-tick-aware
+exports, protected persistence/recovery, controlled fault reporting, and observed
+stack-path coverage. See [current status](docs/CURRENT_STATUS.md) for exact scope
+and remaining limits.
 
 ## Main CLI workflows
 
@@ -74,8 +87,9 @@ before interpreting timing or claiming continuous logging.
 ## Offline checks
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest test_reentry test_flash_protocol test_flash_recovery test_flash_lifecycle test_timing_protocol test_flash_v2 test_measured_pipeline
+.\.venv\Scripts\python.exe -m unittest discover -s tests -t . -p "test_*.py"
 ```
 
-Current baseline:76 host checks (including v2 codec and measured integration). Hardware acceptance is a separate procedure.
+Current baseline: 92 host checks (including v2 codec, measured integration, and
+controlled bench-fixture coverage). Hardware acceptance is a separate procedure.
 Documentation organization changes do not modify firmware, host behavior or data.

@@ -1,7 +1,8 @@
 # Documentation index
 
 Start with [current status](CURRENT_STATUS.md) and the single shared
-[acceptance procedure](ACCEPTANCE_PROCEDURE.md). Both are mirrored across the
+[firmware operator guide](FIRMWARE_GUIDE.md), then use the formal
+[acceptance procedure](ACCEPTANCE_PROCEDURE.md). These are mirrored across the
 repositories; update both copies together.
 
 `reference/` contains specifications and evaluations. `archive/` preserves dated

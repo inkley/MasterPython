@@ -1,16 +1,15 @@
 # Current project status
 
-Updated 2026-11-02. This is the authoritative status snapshot; archived notes
+Updated 2026-11-10. This is the authoritative status snapshot; archived notes
 retain the evidence and decisions of earlier checkpoints. Update both repositories'
-copy together. Firmware baseline: build 1009, CLI version **0.0.3.241**.
-Candidate implementation: **.242/build1010** now includes measured1024-pair v2
-capture, gap events, stopped persistence/recovery/lifecycle and Python measured
-exports/plots. Debug build/layout checks and89 offline tests pass. Flashed on eval; checkpoint A (v1 retention/domain initialization) passed;
-measured acquisition/storage hardware acceptance remains pending. [Read-only upgrade checkpoint](reference/MEASURED_IMPLEMENTATION.md)
-comes before any reclamation. The validated scope below still describes .241.
+copy together. Firmware baseline: build 1012, CLI version **0.0.3.244**.
+The bounded measured-v2 workflow is validated on the eval board through capture,
+RAM export, stopped persistence, verified flash download, recovery, durable ACK,
+identity-bound reclamation, controlled faults, and observed stack-path extension.
+The sections below retain the historical progression from .241 through .244.
 
-Validated implementation commits: firmware `8c2fb0c`, host `e88b44b`.
-This documentation reorganization does not change firmware or its image.
+Prior .241 implementation commits: firmware `8c2fb0c`, host `e88b44b`.
+This documentation update does not change firmware or its flashed image.
 
 ## Validated scope
 
@@ -154,12 +153,12 @@ reporting added. Normal .242 recording remains intact; no MCU commands sent by
 preparation. See [short bench runbook](reference/BENCH_GAP_STACK.md). ADC/error/
 overflow and worst-case stack acceptance remain open.99 offline checks pass.
 
-### .243 observed bench result — 2026-11-02
+### .243 observed bench result â€” 2026-11-02
 
 RAM-only gap capture 808f6dc2-15a8-48ed-b8d6-d992e5208c07 completed64/64 pairs.
 Two events retained, none lost: late/estimated-gap at attempt16 (4 estimated
 missing slots), then early interval at attempt17. Diagnostic trigger range
-927.500–5073.100us; zero ADC failures, CAN drops/overruns, or flash calls.
+927.500â€“5073.100us; zero ADC failures, CAN drops/overruns, or flash calls.
 Event ticks describe pre-trigger timestamps; diagnostic intervals are a separate
 instrumentation point. Stack watermark after a physical startup and bench export:
 3600/4096 bytes pattern-unused (496 touched/unknown), not worst-case acceptance.
@@ -245,3 +244,30 @@ Protected recording899dee62-92d9-48ea-94c5-fcf239668008 remains intact.
 Earlier pending statements above describe intermediate checkpoints. Evidence:
 [controlled-fault runbook](reference/BENCH_ADC_OVERFLOW.md). Broader stack, RTC/UTC,
 physical interruption and independent-supply testing remain separate open work.
+
+### .244 observed storage/lifecycle stack coverage â€” 2026-11-10
+
+After a physical RESET-button startup, the boot-painted 4096-byte MSP watermark
+reported 3600 bytes pattern-unused (496 touched/unknown). Recovery, flash verify,
+1024-pair protected download, durable ACK, identity-bound clear, measured 1024-pair
+capture, RAM export, persistence and committed flash download did not extend that
+observed watermark. ACK used 1 erase/2 program calls in 658.6932 ms; clear used 21/2
+in 1059.0651 ms; persistence used 20/40 in 1644.0040 ms. Storage operations reported
+zero ADC attempts and zero ADC/CAN faults.
+
+The fresh measured recording `dda07164-f941-4814-b418-f732c120bf43`, timer domain
+`111d503b-0946-4e56-beb1-870cefaa3d24`, completed 1024/1024 pairs at nominal
+1000 Hz with no timing events or quality flags. RAM and committed-flash exports are
+byte-identical, SHA256
+`e3920109235c1f8c977f3f82e7196d7e37cc48e6af4b8121615f1abe302b8d77`.
+It is now the retained COMMITTED1024 recording and is unacknowledged. The earlier
+`899dee62-92d9-48ea-94c5-fcf239668008` MCU copy was ACKed and identity-cleared only
+after two matching verified host backups were confirmed.
+
+This completes the planned observed-path stack extension with a large measured
+margin over the firmware's 512-byte bench threshold. It is not exact peak-SP or
+absolute worst-case proof: conservative unpainted/reserved frames, lazy FPU
+stacking and pattern collisions limit the paint method. Evidence:
+`Data/stack_readback_20261110_01/STACK_NOTES.txt` and
+`Data/stack_lifecycle_20261110_01/`. Independent power, RTC/UTC, physical
+interrupted-flash and custom-PCB acceptance remain open.

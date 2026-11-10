@@ -4,6 +4,7 @@ Host CLI, verified recording retrieval and quick-look analysis for two independe
 differential-pressure channels. Firmware companion: [PressureSensor](https://github.com/inkley/PressureSensor).
 
 - [Current validated state and open work](docs/CURRENT_STATUS.md)
+- [Firmware operator and development guide](docs/FIRMWARE_GUIDE.md)
 - [Repeatable acceptance procedure](docs/ACCEPTANCE_PROCEDURE.md)
 - [Specifications and historical evidence index](docs/README.md)
 - [Development quick start](REENTRY_GUIDE.md)

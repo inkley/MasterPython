@@ -3,7 +3,8 @@
 Baseline: firmware **0.0.3.241**, build1009. The maximum 4094-pair bounded
 capture/persist/download/clean-reboot checkpoint passed. Start with
 [current status](docs/CURRENT_STATUS.md), the [acceptance procedure](docs/ACCEPTANCE_PROCEDURE.md),
-and the [documentation index](docs/README.md). The original restart guide is
+the [firmware operator guide](docs/FIRMWARE_GUIDE.md), and the
+[documentation index](docs/README.md). The original restart guide is
 [archived](docs/archive/REENTRY_2026-09-22.md).
 
 ```powershell
